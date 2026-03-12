@@ -69,7 +69,7 @@ print(f"  vision backbone: {config.vision_config.model_type}")
 # Instantiate the model
 # ------------------------------------------------------------------
 device = "cuda" if torch.cuda.is_available() else "cpu"
-model = Eagle2_5_VLForConditionalGeneration(config).to(device)
+model = Eagle2_5_VLForConditionalGeneration(config).to(device).to(torch.bfloat16)
 model.eval()
 
 total_params = sum(p.numel() for p in model.parameters())
@@ -101,7 +101,7 @@ labels[:, :num_img_tok] = -100  # don't compute loss on image token positions
 
 # pixel_values: (num_images, 3, H, W)
 H = W = config.vision_config.image_size
-pixel_values = torch.randn(NUM_IMAGES, 3, H, W).to(device)
+pixel_values = torch.randn(NUM_IMAGES, 3, H, W).to(device).to(torch.bfloat16)
 
 # image_flags: which pixel_value entries are real (all real here)
 image_flags = torch.ones(NUM_IMAGES, 1, dtype=torch.long).to(device)
