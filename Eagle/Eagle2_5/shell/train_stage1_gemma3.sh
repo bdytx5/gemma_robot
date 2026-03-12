@@ -36,7 +36,7 @@ torchrun \
     --master_port=$PORT \
   eaglevl/train/eagle_2_5_vl_finetune.py \
   --llm_path "google/gemma-3-270m" \
-  --vision_path "./pretrained/siglip2-so400m-patch14-448" \
+  --vision_path "./pretrained/siglip2-so400m-patch14-384" \
   --conv_style "gemma3-chat" \
   --normalize_type "siglip" \
   --output_dir ${OUTPUT_DIR} \
