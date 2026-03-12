@@ -3,6 +3,7 @@ set -x
 
 export NCCL_TIMEOUT=1800
 export WANDB_PROJECT="eagle-gemma3"
+export LAUNCHER=pytorch
 
 GPUS=${GPUS:-1}
 NNODES=${1:-1}
