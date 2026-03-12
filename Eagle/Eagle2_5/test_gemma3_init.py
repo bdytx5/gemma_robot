@@ -120,5 +120,5 @@ with torch.no_grad():
     )
 
 print(f"  loss: {out.loss.item():.4f}")
-print(f"  logits shape: {out.logits.shape}")
+print(f"  logits: {out.logits.shape if out.logits is not None else 'None (normal when labels passed)'}")
 print("\nAll checks passed.")
