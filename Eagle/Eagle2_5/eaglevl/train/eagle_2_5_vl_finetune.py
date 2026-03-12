@@ -80,7 +80,11 @@ from transformers.utils.logging import (enable_default_handler,
 from eaglevl.train.tools import SaveCheckpointCallback, MemoryLoggerCallback, get_last_checkpoint_guard
 
 from eaglevl.model.c_radio.radio_model import RADIOModel, RADIOConfig
-from eaglevl.train.one_logger import create_onelogger_config, warp_onelogger_trainer
+try:
+    from eaglevl.train.one_logger import create_onelogger_config, warp_onelogger_trainer
+except ImportError:
+    create_onelogger_config = None
+    warp_onelogger_trainer = None
 from dotenv import load_dotenv
 load_dotenv()
 
