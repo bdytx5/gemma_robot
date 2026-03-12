@@ -323,10 +323,10 @@ def patch_flash_attention_forward_for_lower_hf_version():
 def patch_packing_attention():
     # Check transformers version to determine import path
     import importlib
-    import pkg_resources
+    from packaging.version import Version
     from eaglevl.model.siglip.modeling_siglip import SiglipVisionModel as CustomSiglipVisionModel
     transformers_version = importlib.import_module("transformers").__version__
-    if pkg_resources.parse_version(transformers_version) <= pkg_resources.parse_version("4.43.0"):
+    if Version(transformers_version) <= Version("4.43.0"):
         patch_flash_attention_forward_for_lower_hf_version()
     else:
         from transformers.modeling_utils import AttentionInterface
