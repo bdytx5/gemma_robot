@@ -83,22 +83,23 @@ print(f"\nModel instantiated OK — {total_params:,} params")
 #   input_ids:    (batch, seq_len)  — some tokens are image_token_index
 #   attention_mask, labels
 # ------------------------------------------------------------------
-BATCH = 2
-SEQ = 32
-NUM_IMAGES = BATCH  # one image per batch item
+BATCH = 1
+NUM_IMAGES = 1
 IMAGE_TOKEN_INDEX = config.image_token_index
 
 # num_image_token tiles per image (set by config)
 num_img_tok = model.num_image_token
 print(f"  num_image_token per image: {num_img_tok}")
 
+SEQ = num_img_tok + 32  # enough room for image tokens + some text
+
 # Build input_ids: put image tokens at the start of each sequence
 input_ids = torch.randint(1, config.text_config.vocab_size, (BATCH, SEQ)).to(device)
-input_ids[:, :num_img_tok] = IMAGE_TOKEN_INDEX  # first num_img_tok positions are image tokens
+input_ids[:, :num_img_tok] = IMAGE_TOKEN_INDEX
 
 attention_mask = torch.ones(BATCH, SEQ, dtype=torch.long).to(device)
 labels = input_ids.clone()
-labels[:, :num_img_tok] = -100  # don't compute loss on image token positions
+labels[:, :num_img_tok] = -100
 
 # pixel_values: (num_images, 3, H, W)
 H = W = config.vision_config.image_size
