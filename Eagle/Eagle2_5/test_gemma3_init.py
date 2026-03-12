@@ -58,7 +58,8 @@ config = Eagle2_5_VLConfig(
     downsample_ratio=0.5,
     use_pixel_shuffle=True,
     mlp_connector_layers=2,
-    image_token_index=5,   # just some token id within our tiny vocab
+    image_token_index=5,
+    select_layer=-1,  # tiny vision model only has 2 layers
 )
 
 print("Config OK")
