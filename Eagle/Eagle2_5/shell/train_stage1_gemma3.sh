@@ -42,7 +42,7 @@ torchrun \
   --output_dir ${OUTPUT_DIR} \
   --meta_path "local_playground/recipe/stage1.prepared.json" \
   --overwrite_output_dir False \
-  --force_image_size 448 \
+  --force_image_size 384 \
   --max_dynamic_tiles 12 \
   --down_sample_ratio 0.5 \
   --pad2square False \
