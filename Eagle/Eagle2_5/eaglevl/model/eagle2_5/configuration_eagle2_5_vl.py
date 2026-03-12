@@ -103,6 +103,7 @@ class Eagle2_5_VLConfig(PretrainedConfig):
             self.text_config = Qwen3Config(**text_config)
         elif text_config['architectures'][0] == 'Gemma3ForCausalLM':
             self.text_config = Gemma3TextConfig(**{k: v for k, v in text_config.items() if k != 'architectures'})
+            self.text_config.architectures = ['Gemma3ForCausalLM']
         else:
             raise ValueError('Unsupported architecture: {}'.format(text_config['architectures'][0]))
         self.use_backbone_lora = use_backbone_lora
