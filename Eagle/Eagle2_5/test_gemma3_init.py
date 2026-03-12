@@ -68,7 +68,7 @@ print(f"  vision backbone: {config.vision_config.model_type}")
 # ------------------------------------------------------------------
 # Instantiate the model
 # ------------------------------------------------------------------
-device = "cpu"
+device = "cuda" if torch.cuda.is_available() else "cpu"
 model = Eagle2_5_VLForConditionalGeneration(config).to(device)
 model.eval()
 
@@ -92,19 +92,19 @@ num_img_tok = model.num_image_token
 print(f"  num_image_token per image: {num_img_tok}")
 
 # Build input_ids: put image tokens at the start of each sequence
-input_ids = torch.randint(1, config.text_config.vocab_size, (BATCH, SEQ))
+input_ids = torch.randint(1, config.text_config.vocab_size, (BATCH, SEQ)).to(device)
 input_ids[:, :num_img_tok] = IMAGE_TOKEN_INDEX  # first num_img_tok positions are image tokens
 
-attention_mask = torch.ones(BATCH, SEQ, dtype=torch.long)
+attention_mask = torch.ones(BATCH, SEQ, dtype=torch.long).to(device)
 labels = input_ids.clone()
 labels[:, :num_img_tok] = -100  # don't compute loss on image token positions
 
 # pixel_values: (num_images, 3, H, W)
 H = W = config.vision_config.image_size
-pixel_values = torch.randn(NUM_IMAGES, 3, H, W)
+pixel_values = torch.randn(NUM_IMAGES, 3, H, W).to(device)
 
 # image_flags: which pixel_value entries are real (all real here)
-image_flags = torch.ones(NUM_IMAGES, 1, dtype=torch.long)
+image_flags = torch.ones(NUM_IMAGES, 1, dtype=torch.long).to(device)
 
 print("\nRunning forward pass...")
 with torch.no_grad():
