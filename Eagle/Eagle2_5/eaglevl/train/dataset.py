@@ -1240,6 +1240,102 @@ def dynamic_preprocess(image, min_num=1, max_num=6, image_size=448, use_thumbnai
         processed_images.append(thumbnail_img)
     return processed_images
 
+def preprocess_gemma3(
+        template_name,
+        sources,
+        tokenizer: transformers.PreTrainedTokenizer,
+        num_image_token: Union[int, np.ndarray],
+        text_only: bool = False,
+        group_by_length: bool = False,
+        ds_name: str = None,
+        num_image: int = 1,
+        replace_special_tokens=True,
+        placeholder: str = 'image',
+) -> Dict:
+    # Official Gemma3 format: <bos><start_of_turn>user\n...<end_of_turn>\n<start_of_turn>model\n...<end_of_turn>\n
+    # System prompt is prepended to the first user turn.
+    # https://developers.googleblog.com/en/introducing-gemma3/
+    formatted_conversations = []
+    for source in sources:
+        if source[0]['from'] == 'system':
+            system_prompt = source[0]['value'].strip()
+            source = source[1:]
+        else:
+            system_prompt = None
+
+        text = '<bos>'
+        for i, msg in enumerate(source):
+            content = str(msg['value']).strip()
+            if msg['from'] == 'human':
+                if i == 0 and system_prompt:
+                    content = system_prompt + '\n' + content
+                text += f'<start_of_turn>user\n{content}<end_of_turn>\n'
+            elif msg['from'] == 'gpt':
+                text += f'<start_of_turn>model\n{content}<end_of_turn>\n'
+        formatted_conversations.append(text)
+    conversations = formatted_conversations
+
+    num_image_token_pre_compute = 0
+    for i, conversation in enumerate(conversations):
+        if type(num_image_token) == int:
+            if not text_only:
+                image_tokens = f'{IMG_START_TOKEN}{IMG_CONTEXT_TOKEN * num_image_token}{IMG_END_TOKEN}'
+                conversations[i] = conversations[i].replace(f'<{placeholder}>', image_tokens, num_image)
+                num_image_token_pre_compute += num_image_token
+        elif type(num_image_token) == np.ndarray:
+            num_image_token_list = num_image_token.tolist()
+            image_tokens_list = []
+            for idx, num_token_per_image in enumerate(num_image_token_list):
+                image_tokens_list.append(f'{IMG_START_TOKEN}{IMG_CONTEXT_TOKEN * int(num_token_per_image)}{IMG_END_TOKEN}')
+            for idx, image_tokens in enumerate(image_tokens_list):
+                if not text_only:
+                    conversations[i] = conversations[i].replace(f'<{placeholder}-{idx+1}>', image_tokens, num_image)
+                    num_image_token_pre_compute += num_image_token_list[idx]
+
+    group_by_length = True
+    input_ids = tokenizer(
+        conversations,
+        return_tensors='pt',
+        padding=False if group_by_length else 'max_length',
+        max_length=tokenizer.model_max_length,
+        truncation=True,
+    ).input_ids
+
+    IMG_CONTEXT_TOKEN_ID = tokenizer.encode(IMG_CONTEXT_TOKEN)[0]
+    assert num_image_token_pre_compute == ((input_ids == IMG_CONTEXT_TOKEN_ID).sum()), \
+        f'Precompute image token number: {num_image_token_pre_compute} vs. Actual: {(input_ids == IMG_CONTEXT_TOKEN_ID).sum()}'
+
+    targets_flag = input_ids.clone() * 0
+
+    # Mask everything except model turns
+    start_of_turn_id = tokenizer.convert_tokens_to_ids("<start_of_turn>")
+    model_id = tokenizer.convert_tokens_to_ids("model")
+    end_of_turn_id = tokenizer.convert_tokens_to_ids("<end_of_turn>")
+
+    start_idxs = torch.where(input_ids == start_of_turn_id)[1]
+    model_idxs = torch.where(input_ids == model_id)[1]
+    eot_idxs = torch.where(input_ids == end_of_turn_id)[1]
+
+    assert targets_flag.size(0) == 1
+    for model_idx in model_idxs:
+        sets = list(set((start_idxs + 1).tolist()))
+        if model_idx.item() in sets:
+            st = model_idx + 1
+            for eot_idx in eot_idxs:
+                if eot_idx > st:
+                    targets_flag[:, st + 1: eot_idx + 1] = 1
+                    break
+
+    targets = input_ids.clone()
+    assert targets_flag.sum() > 0, 'should train some label'
+    targets[targets_flag == 0] = IGNORE_TOKEN_ID
+    return dict(
+        input_ids=input_ids,
+        labels=targets,
+        attention_mask=input_ids.ne(tokenizer.pad_token_id),
+    )
+
+
 PROCESS_FUNCTIONS = {
     'internlm-chat': preprocess_internlm,
     'llama3-chat': preprocess_llama3,
@@ -1248,6 +1344,7 @@ PROCESS_FUNCTIONS = {
     'nm5-chat': preprocess_nm5,
     'phi3-chat': preprocess_phi3,
     "smollm2-chat": preprocess_qwen2, # smollm2 has the same conv template as qwen2-chat
+    'gemma3-chat': preprocess_gemma3,
 }
 
 if __name__ == '__main__':
