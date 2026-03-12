@@ -62,7 +62,7 @@ config = Eagle2_5_VLConfig(
 )
 
 print("Config OK")
-print(f"  text backbone: {config.text_config.architectures[0]}")
+print(f"  text backbone: {config.text_config.model_type}")
 print(f"  vision backbone: {config.vision_config.model_type}")
 
 # ------------------------------------------------------------------
