@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -x
-GPUS=${GPUS:-8}
+GPUS=${GPUS:-1}
 
 META_PATH=${1:-"local_playground/recipe/stage1.json"}
 NNODES=${2:-1}
 LOG_DIR=${3:-"work_dirs/prepare_data"}
-TOKENIZER=${4:-"Qwen/Qwen3-1.7B"}
+TOKENIZER=${4:-"google/gemma-3-4b-it"}
+# TOKENIZER=${4:-"Qwen/Qwen3-1.7B"}
 # TOKENIZER=${4:-"HuggingFaceTB/SmolLM2-1.7B-Instruct"}
 LAUNCHER=${5:-"pytorch"}
 NODE_RANK=${NODE_RANK:-0}
@@ -30,6 +31,8 @@ max_num_frames=24
 # set conv_style
 if [[ "$TOKENIZER" == *"Qwen3"* ]]; then
     conv_style="qwen3-chat"
+elif [[ "$TOKENIZER" == *"gemma-3"* ]] || [[ "$TOKENIZER" == *"gemma3"* ]]; then
+    conv_style="gemma3-chat"
 else
     echo "Error: Unsupported TOKENIZER '$TOKENIZER'. Please modify the script to support this model."
     exit 1
@@ -50,7 +53,7 @@ COMMON_PARAMS="
   --save_root ./local_playground/prepared_data/${META_NAME} \
   --meta_path ${META_PATH} \
   --overwrite_output_dir True \
-  --force_image_size 448 \
+  --force_image_size 384 \
   --max_dynamic_tiles 12 \
   --down_sample_ratio 0.5 \
   --pad2square False \

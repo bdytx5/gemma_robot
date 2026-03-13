@@ -7,7 +7,7 @@ export LAUNCHER=pytorch
 
 GPUS=${GPUS:-1}
 NNODES=${1:-1}
-OUTPUT_DIR=${2:-"./output/stage1_gemma3"}
+OUTPUT_DIR=${2:-"./output/stage2_gemma3_270m"}
 HF_TOKEN=${3:-""}
 if [ -n "$HF_TOKEN" ]; then
   export HF_TOKEN="$HF_TOKEN"
@@ -67,13 +67,14 @@ torchrun \
   --conv_style "gemma3-chat" \
   --normalize_type "siglip" \
   --output_dir ${OUTPUT_DIR} \
-  --meta_path "local_playground/recipe/stage1.prepared.json" \
+  --meta_path "local_playground/recipe/stage2.prepared.json" \
+  --pretrained_model_path "./output/stage1_gemma3" \
   --overwrite_output_dir False \
   --force_image_size 384 \
   --max_dynamic_tiles 12 \
   --down_sample_ratio 0.5 \
   --pad2square False \
-  --freeze_llm True \
+  --freeze_llm False \
   --freeze_mlp False \
   --freeze_backbone True \
   --vision_select_layer -1 \
@@ -87,7 +88,7 @@ torchrun \
   --save_strategy "steps" \
   --save_steps 250 \
   --save_total_limit 5 \
-  --learning_rate 2e-5 \
+  --learning_rate 1e-5 \
   --weight_decay 0.05 \
   --warmup_ratio 0.03 \
   --lr_scheduler_type "cosine" \
@@ -100,7 +101,7 @@ torchrun \
   --group_by_length True \
   --dynamic_image_size True \
   --use_thumbnail True \
-  --deepspeed "deepspeed_configs/zero_stage1_config.json" \
+  --deepspeed "deepspeed_configs/zero_stage2_config.json" \
   --loss_version ${LOSS_VERSION} \
   --report_to "wandb" \
   --run_name $script_name \
