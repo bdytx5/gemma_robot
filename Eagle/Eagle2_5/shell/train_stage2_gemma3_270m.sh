@@ -62,13 +62,12 @@ torchrun \
     --nproc_per_node=$GPUS \
     --master_port=$PORT \
   eaglevl/train/eagle_2_5_vl_finetune.py \
-  --llm_path "google/gemma-3-270m" \
+  --model_name_or_path "youngbrett48/train_stage1_gemma3.sh" \
   --vision_path "./pretrained/siglip2-so400m-patch14-384" \
   --conv_style "gemma3-chat" \
   --normalize_type "siglip" \
   --output_dir ${OUTPUT_DIR} \
   --meta_path "local_playground/recipe/stage2.prepared.json" \
-  --pretrained_model_path "./output/stage1_gemma3" \
   --overwrite_output_dir False \
   --force_image_size 384 \
   --max_dynamic_tiles 12 \
