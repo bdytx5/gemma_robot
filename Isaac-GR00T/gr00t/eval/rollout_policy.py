@@ -470,6 +470,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--n_envs", type=int, default=8)
     parser.add_argument("--n_action_steps", type=int, default=8)
+    parser.add_argument("--output_json", type=str, default=None, help="Path to write JSON results")
 
     args = parser.parse_args()
 
@@ -493,5 +494,20 @@ if __name__ == "__main__":
         n_envs=args.n_envs,
         n_action_steps=args.n_action_steps,
     )
+    env_name, episode_successes, episode_infos = results
+    success_rate = float(np.mean(episode_successes))
     print("results: ", results)
-    print("success rate: ", np.mean(results[1]))
+    print("success rate: ", success_rate)
+
+    if args.output_json is not None:
+        import json
+        output = {
+            "env_name": env_name,
+            "n_episodes": len(episode_successes),
+            "success_rate": success_rate,
+            "episode_successes": [bool(s) for s in episode_successes],
+            "episode_infos": {k: [float(v) if hasattr(v, "item") else v for v in vals] for k, vals in episode_infos.items()},
+        }
+        with open(args.output_json, "w") as f:
+            json.dump(output, f, indent=2)
+        print(f"Results written to {args.output_json}")

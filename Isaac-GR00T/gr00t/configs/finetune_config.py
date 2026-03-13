@@ -116,3 +116,18 @@ class FinetuneConfig:
 
     num_shards_per_epoch: int = int(1e5)
     """Number of shards to use for the dataset. reduce this number if vram is limited."""
+
+    # --- Eagle2.5 backbone overrides ---
+    backbone_model_type: str | None = None
+    """
+    Override the backbone_model_type in the model config.
+    Set to "eagle2_5" when using an Eagle2.5+Gemma3 checkpoint.
+    If None, uses the value saved in the base model config.
+    """
+
+    backbone_embedding_dim: int | None = None
+    """
+    Override the backbone_embedding_dim (LLM hidden size) in the model config.
+    Gemma3-270m = 1152. Must match the checkpoint's LLM hidden size.
+    If None, uses the value saved in the base model config.
+    """

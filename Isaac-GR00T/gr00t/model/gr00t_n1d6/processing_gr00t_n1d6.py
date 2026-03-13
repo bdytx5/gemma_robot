@@ -45,19 +45,174 @@ EMBODIMENT_TAG_TO_PROJECTOR_INDEX = {
 }
 
 
+IMG_START_TOKEN = "<img>"
+IMG_END_TOKEN = "</img>"
+IMG_CONTEXT_TOKEN = "<IMG_CONTEXT>"
+
+
+class _Eagle2_5ProcessorShim:
+    """
+    Minimal processor shim for Eagle2.5 checkpoints.
+
+    Mimics the subset of the Eagle processor API that GR00T's collator and
+    processor call:
+      - apply_chat_template(conversation, tokenize, add_generation_prompt)
+      - __call__(text, images, return_tensors, padding)
+      - tokenizer attribute
+
+    Image tiling and pixel_values assembly are handled here so the collator
+    can remain unchanged for the eagle2_5 model_type path.
+    """
+
+    def __init__(self, tokenizer, image_size: int = 384, max_tiles: int = 12):
+        import sys, os
+        _EAGLE_REPO = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "Eagle", "Eagle2_5")
+        )
+        if os.path.isdir(_EAGLE_REPO) and _EAGLE_REPO not in sys.path:
+            sys.path.insert(0, _EAGLE_REPO)
+
+        # GEMMA3 CHANGE: eaglevl conversation.py does not ship a "gemma3-chat"
+        # template — we register one here before importing get_conv_template.
+        # This uses the standard Gemma3 instruct format:
+        #   <start_of_turn>user\n{text}<end_of_turn>\n<start_of_turn>model\n
+        from eaglevl.conversation import Conversation, SeparatorStyle, register_conv_template, get_conv_template
+        if "gemma3-chat" not in [t for t in ["gemma3-chat"]]:
+            pass  # handled below with exist check
+        try:
+            get_conv_template("gemma3-chat")
+        except KeyError:
+            # GEMMA3 CHANGE: register the gemma3-chat conversation template
+            # since Eagle2.5's conversation.py predates Gemma3 support.
+            register_conv_template(
+                Conversation(
+                    name="gemma3-chat",
+                    system_template="",
+                    system_message="",
+                    roles=("<start_of_turn>user", "<start_of_turn>model"),
+                    sep_style=SeparatorStyle.ADD_NEW_LINE_SINGLE,
+                    sep="<end_of_turn>\n",
+                    stop_str="<end_of_turn>",
+                ),
+                override=False,
+            )
+
+        self.tokenizer = tokenizer
+        self.get_conv_template = get_conv_template
+        self.image_size = image_size
+        self.max_tiles = max_tiles
+        self.img_context_token_id = tokenizer.convert_tokens_to_ids(IMG_CONTEXT_TOKEN)
+
+        # GEMMA3 CHANGE: num_image_token calculation for Gemma3-270m Eagle2.5:
+        #   vision: siglip2-so400m-patch14-384 → patch_size=14, image_size=384
+        #   connector: pixel_shuffle with downsample_ratio=0.5
+        #   formula: (image_size // patch_size)^2 * downsample_ratio^2
+        #            = (384 // 14)^2 * 0.25 = 27^2 * 0.25 = 729 * 0.25 = 182
+        # This must match model.num_image_token from the Eagle2.5 checkpoint.
+        # If there's a mismatch the scatter step will warn and truncate.
+        patch_size = 14  # siglip2-so400m-patch14-384
+        downsample_ratio = 0.5  # --down_sample_ratio 0.5 in train_stage2_gemma3_270m.sh
+        self.num_image_token = int((image_size // patch_size) ** 2 * (downsample_ratio ** 2))
+
+    def apply_chat_template(
+        self, conversation: list, tokenize: bool = False, add_generation_prompt: bool = False
+    ) -> str:
+        """Build a gemma3-chat prompt with image placeholders inserted."""
+        # GEMMA3 CHANGE: use gemma3-chat template (registered in __init__ above)
+        template = self.get_conv_template("gemma3-chat")
+        text_parts = []
+        n_images = 0
+        for turn in conversation:
+            content = turn["content"]
+            if isinstance(content, list):
+                for item in content:
+                    if item["type"] == "text":
+                        text_parts.append(item["text"])
+                    elif item["type"] == "image":
+                        n_images += 1
+            else:
+                text_parts.append(content)
+
+        user_text = " ".join(text_parts)
+        # GEMMA3 CHANGE: image token format matches Eagle2.5's batch_chat():
+        #   <img><IMG_CONTEXT>*num_image_token</img>
+        # One block per image (1 tile assumed here; dynamic tiling handled at
+        # pixel_values assembly time in __call__).
+        image_tokens = "".join(
+            f"{IMG_START_TOKEN}{IMG_CONTEXT_TOKEN * self.num_image_token}{IMG_END_TOKEN}"
+            for _ in range(n_images)
+        )
+        full_text = image_tokens + "\n" + user_text if n_images > 0 else user_text
+
+        template.append_message(template.roles[0], full_text)
+        template.append_message(template.roles[1], None)
+        return template.get_prompt()
+
+    def __call__(
+        self,
+        text: list[str],
+        images: list,
+        return_tensors: str = "pt",
+        padding: bool = True,
+    ) -> "BatchFeature":
+        """
+        Tokenize text and preprocess images into pixel_values + image_flags.
+
+        images: list of PIL Images (already tiled / resized by caller).
+        """
+        import torchvision.transforms.functional as TF
+        import torch
+        from transformers.feature_extraction_utils import BatchFeature
+
+        # Tokenize
+        encoding = self.tokenizer(
+            text, return_tensors=return_tensors, padding=padding, truncation=True
+        )
+
+        # Preprocess images → pixel_values tensor
+        if images:
+            def _to_tensor(img):
+                img = img.convert("RGB").resize((self.image_size, self.image_size))
+                t = TF.to_tensor(img)  # (3, H, W) float32 [0,1]
+                t = TF.normalize(t, mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+                return t.to(torch.bfloat16)
+
+            pixel_values = torch.stack([_to_tensor(img) for img in images])  # (N, 3, H, W)
+            image_flags = torch.ones(len(images), 1, dtype=torch.long)
+        else:
+            pixel_values = torch.zeros(0, 3, self.image_size, self.image_size, dtype=torch.bfloat16)
+            image_flags = torch.zeros(0, 1, dtype=torch.long)
+
+        result = dict(encoding)
+        result["pixel_values"] = pixel_values
+        result["image_flags"] = image_flags
+        return BatchFeature(data=result)
+
+
 def build_processor(model_name: str, transformers_loading_kwargs: dict) -> ProcessorMixin:
-    assert model_name == "nvidia/Eagle-Block2A-2B-v2", f"Processor for {model_name} not supported"
-    eagle_path = os.path.join(
-        os.path.dirname(__file__), "..", "modules", "nvidia", "Eagle-Block2A-2B-v2"
-    )
-    return AutoProcessor.from_pretrained(eagle_path, **transformers_loading_kwargs)
+    if model_name == "nvidia/Eagle-Block2A-2B-v2":
+        eagle_path = os.path.join(
+            os.path.dirname(__file__), "..", "modules", "nvidia", "Eagle-Block2A-2B-v2"
+        )
+        return AutoProcessor.from_pretrained(eagle_path, **transformers_loading_kwargs)
+    else:
+        # Eagle2.5 checkpoint — load tokenizer directly from the HF repo or local path.
+        # AutoProcessor won't work since Eagle2.5 uses a custom tokenizer + image processor
+        # that isn't registered with HF AutoProcessor. We build a lightweight shim instead.
+        from transformers import AutoTokenizer
+        tok_kwargs = {
+            k: v for k, v in transformers_loading_kwargs.items()
+            if k not in ("torch_dtype", "attn_implementation")
+        }
+        tokenizer = AutoTokenizer.from_pretrained(model_name, **tok_kwargs)
+        return _Eagle2_5ProcessorShim(tokenizer)
 
 
 class Gr00tN1d6DataCollator:
     def __init__(
         self,
         model_name: str,
-        model_type: Literal["eagle"] = "eagle",
+        model_type: Literal["eagle", "eagle2_5"] = "eagle",
         transformers_loading_kwargs: dict = {},
     ):
         ### We need to use the same  processor for padding input ids and concat
@@ -89,6 +244,9 @@ class Gr00tN1d6DataCollator:
                     image_inputs, _ = self.processor.process_vision_info(
                         [v["conversation"] for v in values]
                     )
+                else:
+                    # eagle2_5: images already PIL, no extra processing needed
+                    image_inputs = image_inputs
                 vlm_inputs = self.processor(
                     text=text_list, images=image_inputs, return_tensors="pt", padding=True
                 )
@@ -122,7 +280,7 @@ class Gr00tN1d6Processor(BaseProcessor):
         color_jitter_params: dict[str, float] | None = None,
         formalize_language: bool = True,
         model_name: str = "nvidia/Eagle-Block2A-2B-v2",
-        model_type: Literal["eagle"] = "eagle",
+        model_type: Literal["eagle", "eagle2_5"] = "eagle",
         max_state_dim: int = 29,
         max_action_dim: int = 29,
         apply_sincos_state_encoding: bool = False,

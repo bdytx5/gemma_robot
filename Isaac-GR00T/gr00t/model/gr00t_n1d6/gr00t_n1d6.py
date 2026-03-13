@@ -3,6 +3,7 @@ from typing import Tuple
 from gr00t.configs.model.gr00t_n1d6 import Gr00tN1d6Config
 from gr00t.model.modules.dit import AlternateVLDiT, DiT
 from gr00t.model.modules.eagle_backbone import EagleBackbone
+from gr00t.model.modules.eagle2_5_backbone import Eagle2_5Backbone
 from gr00t.model.modules.embodiment_conditioned_mlp import (
     CategorySpecificMLP,
     MultiEmbodimentActionEncoder,
@@ -402,8 +403,21 @@ class Gr00tN1d6ActionHead(nn.Module):
 
 
 def get_backbone_cls(config: Gr00tN1d6Config):
-    if "NVEagle" in config.model_name or "nvidia/Eagle" in config.model_name:
+    # GEMMA3 CHANGE: Eagle2.5+Gemma3 backbone detection.
+    # backbone_model_type="eagle2_5" is the authoritative signal — set explicitly
+    # via --backbone_model_type eagle2_5 at training time. We also fall back to
+    # sniffing the model_name so loading from a saved checkpoint works even if
+    # backbone_model_type was saved as the old default "eagle".
+    if config.backbone_model_type == "eagle2_5":
+        return Eagle2_5Backbone
+    elif "NVEagle" in config.model_name or "nvidia/Eagle" in config.model_name:
         return EagleBackbone
+    elif "eagle2_5" in config.model_name.lower() or "youngbrett48" in config.model_name:
+        # GEMMA3 CHANGE: also fix backbone_model_type on the config object so the
+        # processor/collator get "eagle2_5" rather than the stale "eagle" default
+        # when this model is loaded from a checkpoint that predates the eagle2_5 type.
+        config.backbone_model_type = "eagle2_5"
+        return Eagle2_5Backbone
     else:
         raise ValueError(f"Unsupported model name: {config.model_name}")
 
@@ -457,7 +471,7 @@ class Gr00tN1d6(PreTrainedModel):
 
         self.collator = Gr00tN1d6DataCollator(
             model_name=config.model_name,
-            model_type=config.backbone_model_type,
+            model_type=config.backbone_model_type,  # type: ignore[arg-type]
             transformers_loading_kwargs=transformers_loading_kwargs,
         )
 
