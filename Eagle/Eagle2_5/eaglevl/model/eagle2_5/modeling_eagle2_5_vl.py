@@ -469,9 +469,14 @@ class Eagle2_5_VLForConditionalGeneration(Eagle2_5_VLPreTrainedModel, Generation
         )
 
     def pixel_shuffle(self, x, scale_factor=0.5):
-        # reshape 
+        # reshape
         h = w = int(x.shape[1] ** 0.5)
         x = x.reshape(x.shape[0], h, w, -1)
+
+        # pad h and w to even if needed for pixel shuffle
+        if h % 2 != 0:
+            x = F.pad(x, (0, 0, 0, 1, 0, 1))  # pad last two spatial dims by 1
+            h, w = h + 1, w + 1
 
         # pixel shuffle
         n, w, h, c = x.size()

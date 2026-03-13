@@ -47,7 +47,11 @@ from transformers import (AutoConfig, AutoModelForCausalLM, AutoTokenizer,
 from transformers.utils.logging import (enable_default_handler,
                                         enable_explicit_format, set_verbosity)
 from typing import Tuple
-from torchcodec.decoders import VideoDecoder, AudioDecoder
+try:
+    from torchcodec.decoders import VideoDecoder, AudioDecoder
+except Exception:
+    VideoDecoder = None
+    AudioDecoder = None
 from tqdm import tqdm
 import numpy as np
 from multiprocessing import Pool
@@ -1047,7 +1051,7 @@ def build_datasets(data_args, tokenizer, tcs_loader=None, num_image_token=256, g
                 default_fps=data_args.default_fps,
                 max_num_frames=data_args.max_num_frames,
                 min_num_frames=data_args.min_num_frames,
-                auto_thinking_prompt=data_args.auto_thinking_prompt,
+                auto_thinking_prompt=False,
             )
         except Exception as e:
             logger.info(f'Error in loading dataset: {ds_name}, {e}')

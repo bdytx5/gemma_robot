@@ -77,7 +77,7 @@ from transformers import (AutoConfig, AutoModelForCausalLM, AutoTokenizer,
                           set_seed, AutoProcessor)
 from transformers.utils.logging import (enable_default_handler,
                                         enable_explicit_format, set_verbosity)
-from eaglevl.train.tools import SaveCheckpointCallback, MemoryLoggerCallback, get_last_checkpoint_guard
+from eaglevl.train.tools import SaveCheckpointCallback, MemoryLoggerCallback, HuggingFaceUploadCallback, get_last_checkpoint_guard
 
 from eaglevl.model.c_radio.radio_model import RADIOModel, RADIOConfig
 try:
@@ -524,7 +524,10 @@ def main():
             model.config.vision_config.image_size = data_args.force_image_size
         model.config.force_image_size = data_args.force_image_size
         if model_args.use_pixel_shuffle:
-            model.num_image_token = int((data_args.force_image_size // patch_size) ** 2 * (data_args.down_sample_ratio ** 2))
+            # account for padding odd h/w to even in pixel_shuffle
+            raw_hw = data_args.force_image_size // patch_size
+            padded_hw = raw_hw + (raw_hw % 2)
+            model.num_image_token = int((padded_hw * data_args.down_sample_ratio) ** 2)
         else:
             model.num_image_token = int((data_args.force_image_size // patch_size) ** 2)
     else:
@@ -633,6 +636,8 @@ def main():
     # do we need default_data_collator?
     my_callbacks = [SaveCheckpointCallback(initial_interval_hours=model_args.save_every_n_hours, save_interval_minutes=5)] if model_args.save_every_n_hours > 0 else []
     my_callbacks.append(MemoryLoggerCallback())
+    if model_args.hf_repo_id:
+        my_callbacks.append(HuggingFaceUploadCallback(repo_id=model_args.hf_repo_id, private=model_args.hf_private))
     if data_args.use_onelogger:
         CustomTrainer = warp_onelogger_trainer(one_logger_callback_utils)
     else:

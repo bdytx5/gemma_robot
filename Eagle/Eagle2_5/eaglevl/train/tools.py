@@ -148,4 +148,40 @@ class MemoryLoggerCallback(TrainerCallback):
             pass
 
 
+class HuggingFaceUploadCallback(TrainerCallback):
+    """Push every saved checkpoint to the HuggingFace Hub (rank-0 only)."""
+
+    def __init__(self, repo_id: str, private: bool = True):
+        self.repo_id = repo_id
+        self.private = private
+        self.rank = dist.get_rank() if dist.is_initialized() else 0
+
+    def on_save(self, args, state, control, **kwargs):
+        if self.rank != 0:
+            return control
+
+        import logging
+        logger = logging.getLogger(__name__)
+
+        checkpoint_path = os.path.join(
+            args.output_dir, f"checkpoint-{state.global_step}"
+        )
+        if not os.path.isdir(checkpoint_path):
+            checkpoint_path = args.output_dir
+
+        try:
+            from huggingface_hub import HfApi
+            api = HfApi()
+            api.create_repo(repo_id=self.repo_id, private=self.private, exist_ok=True)
+            logger.info(f"Uploading checkpoint-{state.global_step} to HuggingFace Hub: {self.repo_id}")
+            api.upload_folder(
+                folder_path=checkpoint_path,
+                repo_id=self.repo_id,
+                commit_message=f"Training checkpoint step {state.global_step}",
+                run_as_future=True,  # non-blocking so training continues
+            )
+        except Exception as e:
+            logger.warning(f"HuggingFace upload failed at step {state.global_step}: {e}")
+
+        return control
 

@@ -130,9 +130,9 @@ def _flash_attention_forward(
     # Get all unique IDs and sort them (including 0)
     for i in range(attention_mask.shape[0]):
 
-        unique_ids = attention_mask[i].unique(sorted=True)
+        unique_ids = attention_mask[i].to(torch.int32).unique(sorted=True)
         # Count the number of occurrences for each ID
-        lengths = [(attention_mask[i] == uid).sum().item() for uid in unique_ids]
+        lengths = [(attention_mask[i].to(torch.int32) == uid).sum().item() for uid in unique_ids]
         length_dict = {int(uid): length for uid, length in zip(unique_ids, lengths)}
         length_list = [length_dict[i] if i in length_dict else 0 for i in range(0, max(length_dict)+1)]
         # length_list.append(length_dict[0])

@@ -135,6 +135,14 @@ class ModelArguments:
         default=False,
         metadata={'help': 'Set to True to use auto thinking prompt.'}
     )
+    hf_repo_id: str = field(
+        default='',
+        metadata={'help': 'HuggingFace Hub repo ID to push checkpoints to (e.g. "username/my-model"). Leave empty to disable.'}
+    )
+    hf_private: bool = field(
+        default=True,
+        metadata={'help': 'Whether to make the HuggingFace Hub repo private. Default is True.'}
+    )
 
 @dataclass
 class DataTrainingArguments:

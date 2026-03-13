@@ -1301,7 +1301,7 @@ def preprocess_gemma3(
         truncation=True,
     ).input_ids
 
-    IMG_CONTEXT_TOKEN_ID = tokenizer.encode(IMG_CONTEXT_TOKEN)[0]
+    IMG_CONTEXT_TOKEN_ID = tokenizer.convert_tokens_to_ids(IMG_CONTEXT_TOKEN)
     assert num_image_token_pre_compute == ((input_ids == IMG_CONTEXT_TOKEN_ID).sum()), \
         f'Precompute image token number: {num_image_token_pre_compute} vs. Actual: {(input_ids == IMG_CONTEXT_TOKEN_ID).sum()}'
 
