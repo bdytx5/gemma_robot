@@ -34,8 +34,6 @@ distlib==0.4.0
 distro==1.9.0
 docker-pycreds==0.4.0
 dotenv==0.9.9
--e git+https://github.com/bdytx5/eagle.git@fb26ca756fd7dad88b454c7824c5cdf3a34ad4ad#egg=eagle
--e git+https://github.com/bdytx5/gemma_robot.git@9ffa616e7aefb07366f438480c1adf8ebf73e5bb#egg=eagle_vl&subdirectory=Eagle/Eagle2_5
 ebmlite==3.4.1
 einops==0.6.1
 einops-exts==0.0.4
@@ -46,7 +44,7 @@ fastapi==0.135.1
 ffmpy==1.0.0
 filelock==3.25.1
 filetype==1.2.0
-flash_attn==2.7.4.post1
+https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.16/flash_attn-2.8.3%2Bcu128torch2.10-cp310-cp310-linux_x86_64.whl
 fonttools==4.62.0
 frozenlist==1.8.0
 fsspec==2023.10.0
