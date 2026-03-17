@@ -11,6 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+export PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}"
 
 HF_TOKEN="${1:-${HF_TOKEN:-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}}"
 TOKENIZER="${2:-google/gemma-3-270m}"
@@ -185,7 +186,7 @@ if [ -f "${PREPARED_RECIPE}" ]; then
     echo "[5/5] Prepared recipe already exists — skipping prepare."
 else
     echo "[5/5] Running prepare (tokenize + image tiling → parquet)..."
-    pip install -e . -q
+    pip install . -q
     bash shell/prepare.sh "${RECIPE_PATH}" 1 work_dirs/prepare_stage2 "${TOKENIZER}"
 fi
 

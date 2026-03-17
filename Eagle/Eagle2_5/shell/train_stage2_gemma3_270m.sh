@@ -4,6 +4,7 @@ set -x
 export NCCL_TIMEOUT=1800
 export WANDB_PROJECT="eagle-gemma3"
 export LAUNCHER=pytorch
+export PYTHONPATH="/home/ubuntu/gemma_robot/Eagle/Eagle2_5:${PYTHONPATH:-}"
 
 GPUS=${GPUS:-1}
 NNODES=${1:-1}

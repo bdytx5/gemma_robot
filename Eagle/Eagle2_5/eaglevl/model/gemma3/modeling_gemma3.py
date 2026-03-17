@@ -562,7 +562,7 @@ class Gemma3TextModel(Gemma3TextPreTrainedModel):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
-        embed_scale = math.sqrt(config.hidden_size) if config.embedding_scaling else 1.0
+        embed_scale = math.sqrt(config.hidden_size) if getattr(config, 'embedding_scaling', True) else 1.0
         self.embed_tokens = Gemma3TextScaledWordEmbedding(
             config.vocab_size, config.hidden_size, self.padding_idx, embed_scale=embed_scale
         )
