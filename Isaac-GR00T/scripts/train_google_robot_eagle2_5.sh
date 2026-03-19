@@ -40,38 +40,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-# ── Python: use uv venv if present, else find env with torch ─────────────────
-PYTHON=${PYTHON:-""}
-if [ -z "$PYTHON" ]; then
-    # uv creates .venv in the project root
-    if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
-        PYTHON="$REPO_ROOT/.venv/bin/python"
-    else
-        for candidate in \
-            /home/ubuntu/anaconda3/bin/python \
-            /home/ubuntu/anaconda3/envs/base/bin/python \
-            /home/ubuntu/miniconda3/bin/python \
-            /home/ubuntu/miniconda3/envs/base/bin/python \
-            /opt/conda/bin/python \
-            /opt/miniconda3/bin/python \
-            "$(which python)"; do
-            if [ -x "$candidate" ] && "$candidate" -c "import torch" 2>/dev/null; then
-                PYTHON="$candidate"
-                break
-            fi
-        done
-        if [ -z "$PYTHON" ]; then
-            PYTHON="$(which python3)"
-        fi
-    fi
-fi
-echo "[python] Using: $PYTHON ($("$PYTHON" --version 2>&1))"
-
-# Install Isaac-GR00T package + all deps if not already installed
-if ! "$PYTHON" -c "import gr00t" 2>/dev/null; then
-    echo "[deps] Installing Isaac-GR00T and dependencies via uv..."
+# ── Deps: ensure uv venv is set up first, then use its Python ────────────────
+if [ ! -x "$REPO_ROOT/.venv/bin/python" ]; then
+    echo "[deps] Running uv sync --extra gpu..."
     uv sync --extra gpu
 fi
+PYTHON=${PYTHON:-"$REPO_ROOT/.venv/bin/python"}
+echo "[python] Using: $PYTHON ($("$PYTHON" --version 2>&1))"
 
 # ── Step 1: Check Eagle2.5 source is accessible ───────────────────────────────
 EAGLE_REPO="$(cd "$REPO_ROOT/../Eagle/Eagle2_5" 2>/dev/null && pwd || true)"
