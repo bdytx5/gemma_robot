@@ -216,13 +216,9 @@ def build_processor(model_name: str, transformers_loading_kwargs: dict) -> Proce
         # save_pretrained include a valid tokenizer. Use trust_remote_code so the custom
         # tokenizer class is accepted.
         tok_kwargs["trust_remote_code"] = True
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(model_name, **tok_kwargs)
-        except Exception:
-            # Fallback: load Gemma tokenizer from HF hub
-            from transformers import GemmaTokenizerFast
-            fallback_kwargs = {k: v for k, v in tok_kwargs.items() if k != "trust_remote_code"}
-            tokenizer = GemmaTokenizerFast.from_pretrained("google/gemma-3-270m-it", **fallback_kwargs)
+        from transformers import GemmaTokenizerFast
+        clean_kwargs = {k: v for k, v in tok_kwargs.items() if k not in ("trust_remote_code",)}
+        tokenizer = GemmaTokenizerFast.from_pretrained("google/gemma-3-270m-it", **clean_kwargs)
         return _Eagle2_5ProcessorShim(tokenizer)
 
 
