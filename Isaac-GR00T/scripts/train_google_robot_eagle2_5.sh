@@ -152,6 +152,6 @@ echo "[train] GPUs=$NUM_GPUS  Steps=$MAX_STEPS  Embodiment=$EMBODIMENT"
     --state_dropout_prob 0.5 \
     --backbone_model_type eagle2_5 \
     --backbone_embedding_dim $BACKBONE_EMBEDDING_DIM \
-    --tune_llm True
+    --tune_llm
 
 echo "[done] Checkpoint saved to $OUTPUT_DIR"
