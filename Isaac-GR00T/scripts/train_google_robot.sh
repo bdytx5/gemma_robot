@@ -55,13 +55,11 @@ if [ -z "$PYTHON" ]; then
 fi
 echo "[python] Using: $PYTHON ($("$PYTHON" --version 2>&1))"
 
-# Install missing deps
-for pkg in tyro omegaconf; do
-    if ! "$PYTHON" -c "import $pkg" 2>/dev/null; then
-        echo "[deps] Installing $pkg..."
-        "$PYTHON" -m pip install -q "$pkg"
-    fi
-done
+# Install Isaac-GR00T package + all deps if not already installed
+if ! "$PYTHON" -c "import gr00t" 2>/dev/null; then
+    echo "[deps] Installing Isaac-GR00T and dependencies..."
+    "$PYTHON" -m pip install -q -e ".[gpu]"
+fi
 
 # ── Step 1: Download dataset if not present ───────────────────────────────────
 if [ ! -d "$DATASET_PATH/data" ]; then
