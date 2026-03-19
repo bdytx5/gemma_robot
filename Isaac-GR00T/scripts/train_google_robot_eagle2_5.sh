@@ -68,7 +68,6 @@ from huggingface_hub.errors import HfHubHTTPError
 
 dataset_path = "$DATASET_PATH"
 repo_id = "$HF_DATASET"
-attempt = 0
 while True:
     try:
         snapshot_download(
@@ -81,10 +80,8 @@ while True:
         break
     except HfHubHTTPError as e:
         if "429" in str(e):
-            attempt += 1
-            wait = min(60 * attempt, 300)
-            print(f"[data] Rate limited (429). Waiting {wait}s before retry {attempt}...")
-            time.sleep(wait)
+            print("[data] Rate limited (429). Waiting 300s (5 min) before retry...")
+            time.sleep(300)
         else:
             raise
 PYEOF
