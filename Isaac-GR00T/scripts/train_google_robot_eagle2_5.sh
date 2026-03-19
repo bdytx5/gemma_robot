@@ -60,12 +60,34 @@ echo "[eagle] Eagle2.5 source: $EAGLE_REPO"
 
 # ── Step 2: Download dataset if not present ───────────────────────────────────
 if [ ! -f "$DATASET_PATH/meta/info.json" ]; then
-    echo "[data] Dataset not found at $DATASET_PATH — downloading from HuggingFace..."
-    huggingface-cli download \
-        --repo-type dataset "$HF_DATASET" \
-        --local-dir "$DATASET_PATH" \
-        --max-workers 4
-    echo "[data] Download complete."
+    echo "[data] Downloading $HF_DATASET (retries on 429)..."
+    "$PYTHON" - <<PYEOF
+import time, sys
+from huggingface_hub import snapshot_download
+from huggingface_hub.errors import HfHubHTTPError
+
+dataset_path = "$DATASET_PATH"
+repo_id = "$HF_DATASET"
+attempt = 0
+while True:
+    try:
+        snapshot_download(
+            repo_id=repo_id,
+            repo_type="dataset",
+            local_dir=dataset_path,
+            max_workers=2,
+        )
+        print("[data] Download complete.")
+        break
+    except HfHubHTTPError as e:
+        if "429" in str(e):
+            attempt += 1
+            wait = min(60 * attempt, 300)
+            print(f"[data] Rate limited (429). Waiting {wait}s before retry {attempt}...")
+            time.sleep(wait)
+        else:
+            raise
+PYEOF
 else
     echo "[data] Dataset already present at $DATASET_PATH — skipping download."
 fi
