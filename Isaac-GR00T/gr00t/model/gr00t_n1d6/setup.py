@@ -127,7 +127,10 @@ class Gr00tN1d6Pipeline(ModelPipeline):
     def _create_dataset(self, save_cfg_dir: Path):
         """Create appropriate dataset based on task and mode."""
 
-        if self.config.training.start_from_checkpoint is not None:
+        if (
+            self.config.training.start_from_checkpoint is not None
+            and self.config.model.backbone_model_type != "eagle2_5"
+        ):
             processor = AutoProcessor.from_pretrained(
                 self.config.training.start_from_checkpoint,
                 # Overrides
