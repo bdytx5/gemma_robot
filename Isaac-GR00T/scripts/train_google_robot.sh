@@ -33,6 +33,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+# ── Python: prefer conda base env, fall back to whatever is on PATH ───────────
+PYTHON=${PYTHON:-""}
+if [ -z "$PYTHON" ]; then
+    for candidate in \
+        /home/ubuntu/anaconda3/bin/python \
+        /home/ubuntu/anaconda3/envs/base/bin/python \
+        /opt/conda/bin/python \
+        "$(which python3)"; do
+        if [ -x "$candidate" ]; then
+            PYTHON="$candidate"
+            break
+        fi
+    done
+fi
+echo "[python] Using: $PYTHON"
+
+# Install tyro if missing
+if ! "$PYTHON" -c "import tyro" 2>/dev/null; then
+    echo "[deps] Installing tyro..."
+    "$PYTHON" -m pip install -q tyro
+fi
+
 # ── Step 1: Download dataset if not present ───────────────────────────────────
 if [ ! -d "$DATASET_PATH/data" ]; then
     echo "[data] Dataset not found at $DATASET_PATH — downloading from HuggingFace..."
@@ -107,7 +129,7 @@ fi
 echo "[train] Starting finetuning: $BASE_MODEL -> $OUTPUT_DIR"
 echo "[train] GPUs=$NUM_GPUS  Steps=$MAX_STEPS  Embodiment=$EMBODIMENT"
 
-torchrun \
+"$PYTHON" -m torch.distributed.run \
     --nproc_per_node=$NUM_GPUS \
     --master_port=29500 \
     $TRAIN_SCRIPT \

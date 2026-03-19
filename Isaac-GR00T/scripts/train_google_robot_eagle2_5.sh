@@ -40,6 +40,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+# ── Python: prefer conda base env, fall back to whatever is on PATH ───────────
+PYTHON=${PYTHON:-""}
+if [ -z "$PYTHON" ]; then
+    for candidate in \
+        /home/ubuntu/anaconda3/bin/python \
+        /home/ubuntu/anaconda3/envs/base/bin/python \
+        /opt/conda/bin/python \
+        "$(which python3)"; do
+        if [ -x "$candidate" ]; then
+            PYTHON="$candidate"
+            break
+        fi
+    done
+fi
+echo "[python] Using: $PYTHON"
+
+# Install tyro if missing
+if ! "$PYTHON" -c "import tyro" 2>/dev/null; then
+    echo "[deps] Installing tyro..."
+    "$PYTHON" -m pip install -q tyro
+fi
+
 # ── Step 1: Check Eagle2.5 source is accessible ───────────────────────────────
 EAGLE_REPO="$(cd "$REPO_ROOT/../Eagle/Eagle2_5" 2>/dev/null && pwd || true)"
 if [ ! -d "$EAGLE_REPO" ]; then
@@ -122,7 +144,7 @@ echo "[train] Starting finetuning with Eagle2.5+Gemma3 backbone"
 echo "[train] Base model: $BASE_MODEL_PATH"
 echo "[train] GPUs=$NUM_GPUS  Steps=$MAX_STEPS  Embodiment=$EMBODIMENT"
 
-torchrun \
+"$PYTHON" -m torch.distributed.run \
     --nproc_per_node=$NUM_GPUS \
     --master_port=29500 \
     $TRAIN_SCRIPT \
