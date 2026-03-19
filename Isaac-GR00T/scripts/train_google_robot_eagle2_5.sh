@@ -40,33 +40,37 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-# ── Python: find the env that has torch/gr00t deps ───────────────────────────
+# ── Python: use uv venv if present, else find env with torch ─────────────────
 PYTHON=${PYTHON:-""}
 if [ -z "$PYTHON" ]; then
-    for candidate in \
-        /home/ubuntu/anaconda3/bin/python \
-        /home/ubuntu/anaconda3/envs/base/bin/python \
-        /home/ubuntu/miniconda3/bin/python \
-        /home/ubuntu/miniconda3/envs/base/bin/python \
-        /opt/conda/bin/python \
-        /opt/miniconda3/bin/python \
-        "$(which python)"; do
-        if [ -x "$candidate" ] && "$candidate" -c "import torch" 2>/dev/null; then
-            PYTHON="$candidate"
-            break
+    # uv creates .venv in the project root
+    if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+        PYTHON="$REPO_ROOT/.venv/bin/python"
+    else
+        for candidate in \
+            /home/ubuntu/anaconda3/bin/python \
+            /home/ubuntu/anaconda3/envs/base/bin/python \
+            /home/ubuntu/miniconda3/bin/python \
+            /home/ubuntu/miniconda3/envs/base/bin/python \
+            /opt/conda/bin/python \
+            /opt/miniconda3/bin/python \
+            "$(which python)"; do
+            if [ -x "$candidate" ] && "$candidate" -c "import torch" 2>/dev/null; then
+                PYTHON="$candidate"
+                break
+            fi
+        done
+        if [ -z "$PYTHON" ]; then
+            PYTHON="$(which python3)"
         fi
-    done
-    # last resort: python3 on PATH even without torch
-    if [ -z "$PYTHON" ]; then
-        PYTHON="$(which python3)"
     fi
 fi
 echo "[python] Using: $PYTHON ($("$PYTHON" --version 2>&1))"
 
 # Install Isaac-GR00T package + all deps if not already installed
 if ! "$PYTHON" -c "import gr00t" 2>/dev/null; then
-    echo "[deps] Installing Isaac-GR00T and dependencies..."
-    "$PYTHON" -m pip install -q -e ".[gpu]"
+    echo "[deps] Installing Isaac-GR00T and dependencies via uv..."
+    uv sync --extra gpu
 fi
 
 # ── Step 1: Check Eagle2.5 source is accessible ───────────────────────────────
