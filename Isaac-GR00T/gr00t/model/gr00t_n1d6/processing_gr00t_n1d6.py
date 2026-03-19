@@ -221,7 +221,8 @@ def build_processor(model_name: str, transformers_loading_kwargs: dict) -> Proce
         except Exception:
             # Fallback: load from the local Eagle2.5 repo pretrained tokenizer path
             eagle_tok_path = os.path.join(eagle_repo, "pretrained", "gemma-3-270m-it")
-            tokenizer = AutoTokenizer.from_pretrained(eagle_tok_path, **tok_kwargs)
+            local_kwargs = {**tok_kwargs, "local_files_only": True}
+            tokenizer = AutoTokenizer.from_pretrained(eagle_tok_path, **local_kwargs)
         return _Eagle2_5ProcessorShim(tokenizer)
 
 
