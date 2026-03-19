@@ -196,15 +196,32 @@ def build_processor(model_name: str, transformers_loading_kwargs: dict) -> Proce
         )
         return AutoProcessor.from_pretrained(eagle_path, **transformers_loading_kwargs)
     else:
-        # Eagle2.5 checkpoint — load tokenizer directly from the HF repo or local path.
-        # AutoProcessor won't work since Eagle2.5 uses a custom tokenizer + image processor
-        # that isn't registered with HF AutoProcessor. We build a lightweight shim instead.
+        # Eagle2.5 checkpoint — load tokenizer from the Eagle2.5 source repo, not the
+        # GR00T checkpoint (which may not have a valid HF tokenizer config).
+        # The Eagle2.5 repo is expected at ../../../../Eagle/Eagle2_5 relative to this file.
+        import sys
         from transformers import AutoTokenizer
+
+        eagle_repo = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "Eagle", "Eagle2_5")
+        )
+        if os.path.isdir(eagle_repo) and eagle_repo not in sys.path:
+            sys.path.insert(0, eagle_repo)
+
         tok_kwargs = {
             k: v for k, v in transformers_loading_kwargs.items()
             if k not in ("torch_dtype", "attn_implementation")
         }
-        tokenizer = AutoTokenizer.from_pretrained(model_name, **tok_kwargs)
+        # Load tokenizer from the checkpoint (model_name) — Eagle2.5 checkpoints saved with
+        # save_pretrained include a valid tokenizer. Use trust_remote_code so the custom
+        # tokenizer class is accepted.
+        tok_kwargs["trust_remote_code"] = True
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(model_name, **tok_kwargs)
+        except Exception:
+            # Fallback: load from the local Eagle2.5 repo pretrained tokenizer path
+            eagle_tok_path = os.path.join(eagle_repo, "pretrained", "gemma-3-270m-it")
+            tokenizer = AutoTokenizer.from_pretrained(eagle_tok_path, **tok_kwargs)
         return _Eagle2_5ProcessorShim(tokenizer)
 
 
