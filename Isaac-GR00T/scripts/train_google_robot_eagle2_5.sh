@@ -40,27 +40,36 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-# ── Python: prefer conda base env, fall back to whatever is on PATH ───────────
+# ── Python: find the env that has torch/gr00t deps ───────────────────────────
 PYTHON=${PYTHON:-""}
 if [ -z "$PYTHON" ]; then
     for candidate in \
         /home/ubuntu/anaconda3/bin/python \
         /home/ubuntu/anaconda3/envs/base/bin/python \
+        /home/ubuntu/miniconda3/bin/python \
+        /home/ubuntu/miniconda3/envs/base/bin/python \
         /opt/conda/bin/python \
-        "$(which python3)"; do
-        if [ -x "$candidate" ]; then
+        /opt/miniconda3/bin/python \
+        "$(which python)"; do
+        if [ -x "$candidate" ] && "$candidate" -c "import torch" 2>/dev/null; then
             PYTHON="$candidate"
             break
         fi
     done
+    # last resort: python3 on PATH even without torch
+    if [ -z "$PYTHON" ]; then
+        PYTHON="$(which python3)"
+    fi
 fi
-echo "[python] Using: $PYTHON"
+echo "[python] Using: $PYTHON ($("$PYTHON" --version 2>&1))"
 
-# Install tyro if missing
-if ! "$PYTHON" -c "import tyro" 2>/dev/null; then
-    echo "[deps] Installing tyro..."
-    "$PYTHON" -m pip install -q tyro
-fi
+# Install missing deps
+for pkg in tyro omegaconf; do
+    if ! "$PYTHON" -c "import $pkg" 2>/dev/null; then
+        echo "[deps] Installing $pkg..."
+        "$PYTHON" -m pip install -q "$pkg"
+    fi
+done
 
 # ── Step 1: Check Eagle2.5 source is accessible ───────────────────────────────
 EAGLE_REPO="$(cd "$REPO_ROOT/../Eagle/Eagle2_5" 2>/dev/null && pwd || true)"
