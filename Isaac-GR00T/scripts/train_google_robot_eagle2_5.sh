@@ -55,7 +55,8 @@ if [ ! -d "$DATASET_PATH/data" ]; then
     echo "[data] Dataset not found at $DATASET_PATH — downloading from HuggingFace..."
     huggingface-cli download \
         --repo-type dataset "$HF_DATASET" \
-        --local-dir "$DATASET_PATH"
+        --local-dir "$DATASET_PATH" \
+        --max-workers 1
     echo "[data] Download complete."
 else
     echo "[data] Dataset already present at $DATASET_PATH — skipping download."
