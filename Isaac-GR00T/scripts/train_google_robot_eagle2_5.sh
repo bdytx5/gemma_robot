@@ -74,7 +74,7 @@ while True:
             repo_id=repo_id,
             repo_type="dataset",
             local_dir=dataset_path,
-            max_workers=4,
+            max_workers=32,
         )
         print("[data] Download complete.")
         break
