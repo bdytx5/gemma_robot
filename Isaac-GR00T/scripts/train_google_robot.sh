@@ -39,7 +39,7 @@ if [ ! -d "$DATASET_PATH/data" ]; then
     huggingface-cli download \
         --repo-type dataset "$HF_DATASET" \
         --local-dir "$DATASET_PATH" \
-        --max-workers 1
+        --max-workers 4
     echo "[data] Download complete."
 else
     echo "[data] Dataset already present at $DATASET_PATH — skipping download."
