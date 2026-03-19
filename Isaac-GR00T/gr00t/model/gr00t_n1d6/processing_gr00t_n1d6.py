@@ -219,10 +219,10 @@ def build_processor(model_name: str, transformers_loading_kwargs: dict) -> Proce
         try:
             tokenizer = AutoTokenizer.from_pretrained(model_name, **tok_kwargs)
         except Exception:
-            # Fallback: load from the local Eagle2.5 repo pretrained tokenizer path
-            eagle_tok_path = os.path.join(eagle_repo, "pretrained", "gemma-3-270m-it")
-            local_kwargs = {**tok_kwargs, "local_files_only": True}
-            tokenizer = AutoTokenizer.from_pretrained(eagle_tok_path, **local_kwargs)
+            # Fallback: load Gemma tokenizer from HF hub
+            from transformers import GemmaTokenizerFast
+            fallback_kwargs = {k: v for k, v in tok_kwargs.items() if k != "trust_remote_code"}
+            tokenizer = GemmaTokenizerFast.from_pretrained("google/gemma-3-270m-it", **fallback_kwargs)
         return _Eagle2_5ProcessorShim(tokenizer)
 
 
