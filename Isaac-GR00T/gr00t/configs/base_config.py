@@ -128,6 +128,7 @@ class Config:
                 self.model.backbone_model_type = "eagle"
             assert self.model.backbone_model_type in [
                 "eagle",
+                "eagle2_5",
             ], f"Invalid backbone model type: {self.model.backbone_model_type}"
 
         # Validate precision settings
