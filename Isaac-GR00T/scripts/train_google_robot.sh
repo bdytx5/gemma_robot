@@ -42,7 +42,7 @@ PYTHON=${PYTHON:-"$REPO_ROOT/.venv/bin/python"}
 echo "[python] Using: $PYTHON ($("$PYTHON" --version 2>&1))"
 
 # ── Step 1: Download dataset if not present ───────────────────────────────────
-if [ ! -d "$DATASET_PATH/data" ]; then
+if [ ! -f "$DATASET_PATH/meta/info.json" ]; then
     echo "[data] Dataset not found at $DATASET_PATH — downloading from HuggingFace..."
     huggingface-cli download \
         --repo-type dataset "$HF_DATASET" \

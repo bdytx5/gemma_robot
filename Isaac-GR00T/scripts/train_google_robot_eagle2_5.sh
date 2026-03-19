@@ -59,7 +59,7 @@ export PYTHONPATH="$EAGLE_REPO:${PYTHONPATH:-}"
 echo "[eagle] Eagle2.5 source: $EAGLE_REPO"
 
 # ── Step 2: Download dataset if not present ───────────────────────────────────
-if [ ! -d "$DATASET_PATH/data" ]; then
+if [ ! -f "$DATASET_PATH/meta/info.json" ]; then
     echo "[data] Dataset not found at $DATASET_PATH — downloading from HuggingFace..."
     huggingface-cli download \
         --repo-type dataset "$HF_DATASET" \
