@@ -48,6 +48,7 @@ fi
 # ── Step 2: Copy modality.json if missing ─────────────────────────────────────
 if [ ! -f "$MODALITY_DST" ]; then
     echo "[data] Copying modality.json..."
+    mkdir -p "$(dirname "$MODALITY_DST")"
     cp "$MODALITY_SRC" "$MODALITY_DST"
 else
     echo "[data] modality.json already in place."
