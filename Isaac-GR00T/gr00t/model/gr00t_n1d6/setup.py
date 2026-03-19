@@ -65,7 +65,10 @@ class Gr00tN1d6Pipeline(ModelPipeline):
 
         # Build transformers loading kwargs from training config
 
-        if self.config.training.start_from_checkpoint is not None:
+        if (
+            self.config.training.start_from_checkpoint is not None
+            and self.config.model.backbone_model_type != "eagle2_5"
+        ):
             model, loading_info = AutoModel.from_pretrained(
                 self.config.training.start_from_checkpoint,
                 tune_llm=self.config.model.tune_llm,
@@ -93,6 +96,9 @@ class Gr00tN1d6Pipeline(ModelPipeline):
                 logging.info("mask_token not in checkpoint - initialized")
 
         else:
+            # eagle2_5 backbone is not a registered transformers model type — instantiate directly.
+            # start_from_checkpoint is passed as model_name inside Gr00tN1d6Config so the backbone
+            # loader (Eagle2_5Backbone) will call from_pretrained on it.
             model = self.model_class(
                 self.config.model, transformers_loading_kwargs=self.transformers_loading_kwargs
             )
