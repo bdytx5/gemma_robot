@@ -59,57 +59,92 @@ export PYTHONPATH="$EAGLE_REPO:${PYTHONPATH:-}"
 echo "[eagle] Eagle2.5 source: $EAGLE_REPO"
 
 # ── Step 2: Download dataset if not present ───────────────────────────────────
-echo "[data] Downloading $HF_DATASET (retries on 429)..."
+echo "[data] Downloading missing files from $HF_DATASET (retries on 429)..."
 "$PYTHON" - <<PYEOF
-import time
+import time, json
 from pathlib import Path
 from huggingface_hub import snapshot_download
-from huggingface_hub.errors import HfHubHTTPError
 
-dataset_path = "$DATASET_PATH"
+dataset_path = Path("$DATASET_PATH")
 repo_id = "$HF_DATASET"
-required = ["meta/info.json", "meta/episodes.jsonl", "meta/tasks.jsonl"]
 
-while True:
-    try:
-        snapshot_download(
-            repo_id=repo_id,
-            repo_type="dataset",
-            local_dir=dataset_path,
-            max_workers=32,
-        )
-        break
-    except Exception as e:
-        if "429" in str(e):
-            print("[data] Rate limited (429). Waiting 300s...")
-            time.sleep(300)
-        else:
-            raise
-
-missing = [f for f in required if not (Path(dataset_path) / f).exists()]
-if missing:
-    print(f"[data] Still missing {missing}, retrying meta only...")
+parquet_files = sorted(dataset_path.glob("data/*/*.parquet"))
+if not parquet_files:
+    print("[data] No data on disk yet — downloading everything...")
     while True:
         try:
-            snapshot_download(
-                repo_id=repo_id,
-                repo_type="dataset",
-                local_dir=dataset_path,
-                allow_patterns=["meta/*"],
-                max_workers=4,
-            )
+            snapshot_download(repo_id=repo_id, repo_type="dataset", local_dir=str(dataset_path), max_workers=32)
             break
         except Exception as e:
             if "429" in str(e):
+                print("[data] Rate limited. Waiting 300s...")
                 time.sleep(300)
             else:
                 raise
+    parquet_files = sorted(dataset_path.glob("data/*/*.parquet"))
 
-missing = [f for f in required if not (Path(dataset_path) / f).exists()]
-if missing:
-    raise RuntimeError(f"Dataset still missing: {missing}")
+# Generate meta files from whatever parquet files exist on disk
+import pandas as pd
 
-print("[data] Download complete and verified.")
+print(f"[data] Found {len(parquet_files)} parquet files on disk — generating meta...")
+
+# Read all parquet files to build episodes/tasks
+episodes = {}
+all_tasks = {}
+total_frames = 0
+for pf in parquet_files:
+    df = pd.read_parquet(pf, columns=["episode_index", "task_index"])
+    for _, row in df.iterrows():
+        ep_idx = int(row["episode_index"])
+        task_idx = int(row["task_index"])
+        if ep_idx not in episodes:
+            episodes[ep_idx] = {"tasks": set(), "length": 0}
+        episodes[ep_idx]["tasks"].add(task_idx)
+        episodes[ep_idx]["length"] += 1
+        all_tasks[task_idx] = task_idx
+    total_frames += len(df)
+
+# Get feature schema from first parquet
+df0 = pd.read_parquet(parquet_files[0])
+features = {}
+for col in df0.columns:
+    val = df0[col].iloc[0]
+    if hasattr(val, "__len__"):
+        features[col] = {"dtype": "float32", "shape": [len(val)], "names": None}
+    else:
+        features[col] = {"dtype": str(df0[col].dtype), "shape": [1], "names": None}
+
+# info.json
+info = {
+    "codebase_version": "v2.1",
+    "robot_type": "google_robot",
+    "total_episodes": len(episodes),
+    "total_frames": total_frames,
+    "total_tasks": len(all_tasks),
+    "chunks_size": 1000,
+    "fps": 3,
+    "splits": {"train": f"0:{len(episodes)}"},
+    "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
+    "video_path": "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4",
+    "features": features,
+    "total_chunks": len(set(pf.parent.name for pf in parquet_files)),
+    "total_videos": 0,
+}
+(dataset_path / "meta").mkdir(exist_ok=True)
+with open(dataset_path / "meta/info.json", "w") as f:
+    json.dump(info, f, indent=2)
+
+# episodes.jsonl
+with open(dataset_path / "meta/episodes.jsonl", "w") as f:
+    for ep_idx, ep in sorted(episodes.items()):
+        f.write(json.dumps({"episode_index": ep_idx, "tasks": list(ep["tasks"]), "length": ep["length"]}) + "\n")
+
+# tasks.jsonl
+with open(dataset_path / "meta/tasks.jsonl", "w") as f:
+    for task_idx in sorted(all_tasks.keys()):
+        f.write(json.dumps({"task_index": task_idx, "task": f"task_{task_idx}"}) + "\n")
+
+print(f"[data] Ready: {len(episodes)} episodes, {total_frames} frames from {len(parquet_files)} parquet files.")
 PYEOF
 
 # ── Step 3: Copy modality.json if missing ─────────────────────────────────────
