@@ -29,11 +29,72 @@ cd "$REPO_ROOT"
 WANDB_RUN_ID="eval-$(basename "$OUTPUT_DIR")"
 
 PYTHON="$REPO_ROOT/.venv/bin/python"
+SIMPLER_VENV="$REPO_ROOT/gr00t/eval/sim/SimplerEnv/simpler_uv/.venv"
+SIMPLER_REPO="$REPO_ROOT/external_dependencies/SimplerEnv"
 EAGLE_REPO="$(cd "$REPO_ROOT/../Eagle/Eagle2_5" 2>/dev/null && pwd || true)"
 if [ -d "$EAGLE_REPO" ]; then
     export PYTHONPATH="$EAGLE_REPO:${PYTHONPATH:-}"
 fi
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+# ---------------------------------------------------------------------------
+# Dependency check: ensure SimplerEnv venv exists and simpler_env is importable
+# ---------------------------------------------------------------------------
+setup_simpler_env() {
+    echo "[setup] SimplerEnv venv not ready — setting up now..."
+
+    # Clone SimplerEnv if missing
+    if [ ! -f "$SIMPLER_REPO/setup.py" ]; then
+        echo "[setup] Cloning SimplerEnv..."
+        mkdir -p "$REPO_ROOT/external_dependencies"
+        git clone https://github.com/squarefk/SimplerEnv.git "$SIMPLER_REPO"
+    fi
+
+    # Clone ManiSkill2_real2sim submodule if missing
+    if [ ! -f "$SIMPLER_REPO/ManiSkill2_real2sim/setup.py" ]; then
+        echo "[setup] Cloning ManiSkill2_real2sim..."
+        rm -rf "$SIMPLER_REPO/ManiSkill2_real2sim"
+        git clone https://github.com/youliangtan/ManiSkill2_real2sim \
+            "$SIMPLER_REPO/ManiSkill2_real2sim"
+    fi
+
+    # Create venv
+    echo "[setup] Creating venv..."
+    rm -rf "$SIMPLER_VENV"
+    uv venv "$SIMPLER_VENV" --python 3.10
+
+    # Install all deps
+    echo "[setup] Installing dependencies..."
+    uv pip install --python "$SIMPLER_VENV" \
+        gymnasium==0.29.1 \
+        json-numpy>=2.1.1 \
+        numpy==1.26.4 \
+        opencv-python-headless==4.10.0.84 \
+        ray==2.48.0
+
+    uv pip install --python "$SIMPLER_VENV" -e "$SIMPLER_REPO/ManiSkill2_real2sim"
+    uv pip install --python "$SIMPLER_VENV" -e "$SIMPLER_REPO"
+    uv pip install --python "$SIMPLER_VENV" --editable "$REPO_ROOT" --no-deps
+    uv pip install --python "$SIMPLER_VENV" \
+        tianshou==0.5.1 pydantic av zmq torchvision==0.22.0 transformers==4.51.3
+
+    # Fix pkg_resources (sapien needs setuptools<=69)
+    uv pip install --python "$SIMPLER_VENV" --reinstall setuptools==69.5.1
+
+    echo "[setup] SimplerEnv ready."
+}
+
+echo "[setup] Checking SimplerEnv venv..."
+if ! "$SIMPLER_VENV/bin/python" -c "import simpler_env" 2>/dev/null; then
+    setup_simpler_env
+    # Verify
+    if ! "$SIMPLER_VENV/bin/python" -c "import simpler_env" 2>/dev/null; then
+        echo "[setup] ERROR: SimplerEnv setup failed — aborting." >&2
+        exit 1
+    fi
+fi
+echo "[setup] SimplerEnv OK."
+# ---------------------------------------------------------------------------
 
 echo "[watcher] Watching: $OUTPUT_DIR"
 echo "[watcher] Episodes/env: $N_EPISODES  |  Poll: ${POLL_INTERVAL}s  |  Port: $EVAL_PORT"
