@@ -62,28 +62,47 @@ echo "[eagle] Eagle2.5 source: $EAGLE_REPO"
 echo "[data] Syncing $HF_DATASET (skips already-downloaded files, retries on 429)..."
 "$PYTHON" - <<PYEOF
 import time
+from pathlib import Path
 from huggingface_hub import snapshot_download
 from huggingface_hub.errors import HfHubHTTPError
 
 dataset_path = "$DATASET_PATH"
 repo_id = "$HF_DATASET"
-while True:
-    try:
-        snapshot_download(
-            repo_id=repo_id,
-            repo_type="dataset",
-            local_dir=dataset_path,
-            max_workers=32,
-            local_files_only=False,
-        )
-        print("[data] Download complete.")
-        break
-    except HfHubHTTPError as e:
-        if "429" in str(e):
-            print("[data] Rate limited (429). Waiting 300s (5 min) before retry...")
-            time.sleep(300)
-        else:
-            raise
+required = ["meta/info.json", "meta/episodes.jsonl", "meta/tasks.jsonl"]
+
+def download(patterns=None):
+    while True:
+        try:
+            snapshot_download(
+                repo_id=repo_id,
+                repo_type="dataset",
+                local_dir=dataset_path,
+                max_workers=32,
+                local_files_only=False,
+                allow_patterns=patterns,
+            )
+            break
+        except HfHubHTTPError as e:
+            if "429" in str(e):
+                print("[data] Rate limited (429). Waiting 300s before retry...")
+                time.sleep(300)
+            else:
+                raise
+
+# Full download
+download()
+
+# Verify required files — if any missing, explicitly fetch meta
+missing = [f for f in required if not (Path(dataset_path) / f).exists()]
+if missing:
+    print(f"[data] Missing after download: {missing} — fetching meta explicitly...")
+    download(patterns=["meta/*"])
+
+missing = [f for f in required if not (Path(dataset_path) / f).exists()]
+if missing:
+    raise RuntimeError(f"Dataset incomplete, still missing: {missing}")
+
+print("[data] Download complete and verified.")
 PYEOF
 
 # ── Step 3: Copy modality.json if missing ─────────────────────────────────────
