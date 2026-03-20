@@ -42,10 +42,9 @@ PYTHON=${PYTHON:-"$REPO_ROOT/.venv/bin/python"}
 echo "[python] Using: $PYTHON ($("$PYTHON" --version 2>&1))"
 
 # ── Step 1: Download dataset if not present ───────────────────────────────────
-if [ ! -f "$DATASET_PATH/meta/info.json" ]; then
-    echo "[data] Downloading $HF_DATASET (retries on 429)..."
-    "$PYTHON" - <<PYEOF
-import time, sys
+echo "[data] Syncing $HF_DATASET (skips already-downloaded files, retries on 429)..."
+"$PYTHON" - <<PYEOF
+import time
 from huggingface_hub import snapshot_download
 from huggingface_hub.errors import HfHubHTTPError
 
@@ -58,6 +57,7 @@ while True:
             repo_type="dataset",
             local_dir=dataset_path,
             max_workers=32,
+            local_files_only=False,
         )
         print("[data] Download complete.")
         break
@@ -68,9 +68,6 @@ while True:
         else:
             raise
 PYEOF
-else
-    echo "[data] Dataset already present at $DATASET_PATH — skipping download."
-fi
 
 # ── Step 2: Copy modality.json if missing ─────────────────────────────────────
 if [ ! -f "$MODALITY_DST" ]; then

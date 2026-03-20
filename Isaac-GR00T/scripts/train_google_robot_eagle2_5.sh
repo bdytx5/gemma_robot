@@ -59,10 +59,9 @@ export PYTHONPATH="$EAGLE_REPO:${PYTHONPATH:-}"
 echo "[eagle] Eagle2.5 source: $EAGLE_REPO"
 
 # ── Step 2: Download dataset if not present ───────────────────────────────────
-if [ ! -f "$DATASET_PATH/meta/info.json" ]; then
-    echo "[data] Downloading $HF_DATASET (retries on 429)..."
-    "$PYTHON" - <<PYEOF
-import time, sys
+echo "[data] Syncing $HF_DATASET (skips already-downloaded files, retries on 429)..."
+"$PYTHON" - <<PYEOF
+import time
 from huggingface_hub import snapshot_download
 from huggingface_hub.errors import HfHubHTTPError
 
@@ -75,6 +74,7 @@ while True:
             repo_type="dataset",
             local_dir=dataset_path,
             max_workers=32,
+            local_files_only=False,
         )
         print("[data] Download complete.")
         break
@@ -85,9 +85,6 @@ while True:
         else:
             raise
 PYEOF
-else
-    echo "[data] Dataset already present at $DATASET_PATH — skipping download."
-fi
 
 # ── Step 3: Copy modality.json if missing ─────────────────────────────────────
 if [ ! -f "$MODALITY_DST" ]; then
