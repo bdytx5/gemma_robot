@@ -2,6 +2,7 @@
 set -x
 
 export NCCL_TIMEOUT=1800
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export WANDB_PROJECT="eagle-gemma3"
 export LAUNCHER=pytorch
 export PYTHONPATH="/home/ubuntu/gemma_robot/Eagle/Eagle2_5:${PYTHONPATH:-}"
@@ -19,7 +20,7 @@ MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 
 TOTAL_GPUS=$((GPUS * NNODES))
 
-BATCH_SIZE=3
+BATCH_SIZE=5
 TOKEN_PER_GPU=131072
 GRADIENT_ACC=${GRADIENT_ACC:-1}
 
