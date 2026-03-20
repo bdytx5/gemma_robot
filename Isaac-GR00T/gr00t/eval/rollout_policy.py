@@ -416,15 +416,17 @@ def run_gr00t_sim_policy(
     policy_client_port: int | None = None,
     n_envs: int = 8,
     n_action_steps: int = 8,
+    video_dir: str | None = None,
 ):
     embodiment_tag = get_embodiment_tag_from_env_name(env_name)
 
-    if model_path:
-        video_dir = (
-            f"/tmp/sim_eval_videos_{model_path.split('/')[-3]}_ac{n_action_steps}_{uuid.uuid4()}"
-        )
-    else:
-        video_dir = f"/tmp/sim_eval_videos_{env_name}_ac{n_action_steps}_{uuid.uuid4()}"
+    if video_dir is None:
+        if model_path:
+            video_dir = (
+                f"/tmp/sim_eval_videos_{model_path.split('/')[-3]}_ac{n_action_steps}_{uuid.uuid4()}"
+            )
+        else:
+            video_dir = f"/tmp/sim_eval_videos_{env_name}_ac{n_action_steps}_{uuid.uuid4()}"
     wrapper_configs = WrapperConfigs(
         video=VideoConfig(
             video_dir=video_dir,
@@ -471,6 +473,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_envs", type=int, default=8)
     parser.add_argument("--n_action_steps", type=int, default=8)
     parser.add_argument("--output_json", type=str, default=None, help="Path to write JSON results")
+    parser.add_argument("--video_dir", type=str, default=None, help="Directory to save episode videos")
 
     args = parser.parse_args()
 
@@ -493,6 +496,7 @@ if __name__ == "__main__":
         policy_client_port=args.policy_client_port,
         n_envs=args.n_envs,
         n_action_steps=args.n_action_steps,
+        video_dir=args.video_dir,
     )
     env_name, episode_successes, episode_infos = results
     success_rate = float(np.mean(episode_successes))

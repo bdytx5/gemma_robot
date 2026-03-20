@@ -81,9 +81,9 @@ def run_env(env_name: str, port: int, n_episodes: int, video_dir: str, result_js
         "--policy_client_host", "127.0.0.1",
         "--policy_client_port", str(port),
         "--output_json", result_json,
+        "--video_dir", video_dir,
     ]
     env = os.environ.copy()
-    env["GROOT_VIDEO_DIR"] = video_dir
     Path(video_dir).mkdir(parents=True, exist_ok=True)
     print(f"[eval] Running {env_name} ({n_episodes} episodes)...")
     t0 = time.time()
