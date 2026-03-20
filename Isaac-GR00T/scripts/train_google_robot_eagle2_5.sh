@@ -131,6 +131,21 @@ for col in df0.columns:
     else:
         features[col] = {"dtype": str(df0[col].dtype), "shape": [1], "names": None}
 
+# Add video features from actual folders on disk
+for video_dir in sorted((dataset_path / "videos" / "chunk-000").iterdir()):
+    key = video_dir.name  # e.g. observation.images.image
+    features[key] = {
+        "dtype": "video",
+        "shape": [256, 320, 3],
+        "names": ["height", "width", "channels"],
+        "info": {
+            "video.height": 256, "video.width": 320,
+            "video.codec": "h264", "video.pix_fmt": "yuv420p",
+            "video.is_depth_map": False, "video.fps": 3,
+            "video.channels": 3, "has_audio": False,
+        },
+    }
+
 # info.json
 info = {
     "codebase_version": "v2.1",
