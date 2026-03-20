@@ -10,7 +10,9 @@
 #     (or set BASE_MODEL_PATH to a local path)
 #
 # Usage:
-#   bash scripts/train_google_robot_eagle2_5.sh
+#   bash scripts/train_google_robot_eagle2_5.sh [--good]
+#
+#   --good  Skip download entirely, use whatever data is already on disk
 #
 # Overrides:
 #   NUM_GPUS        Number of GPUs (default: 1)
@@ -21,6 +23,14 @@
 #   DATASET_PATH    Override dataset location (skip auto-download)
 
 set -e
+
+# Parse --good flag
+GOOD_TO_GO=0
+for arg in "$@"; do
+    if [ "$arg" = "--good" ]; then
+        GOOD_TO_GO=1
+    fi
+done
 
 # ── Config ────────────────────────────────────────────────────────────────────
 NUM_GPUS=${NUM_GPUS:-1}
@@ -59,7 +69,11 @@ export PYTHONPATH="$EAGLE_REPO:${PYTHONPATH:-}"
 echo "[eagle] Eagle2.5 source: $EAGLE_REPO"
 
 # ── Step 2: Download dataset if not present ───────────────────────────────────
-echo "[data] Downloading missing files from $HF_DATASET (retries on 429)..."
+if [ "$GOOD_TO_GO" = "1" ]; then
+    echo "[data] --good flag set — skipping download, using existing data."
+fi
+
+echo "[data] Preparing dataset from $HF_DATASET..."
 "$PYTHON" - <<PYEOF
 import time, json
 from pathlib import Path
@@ -67,9 +81,10 @@ from huggingface_hub import snapshot_download
 
 dataset_path = Path("$DATASET_PATH")
 repo_id = "$HF_DATASET"
+good_to_go = "$GOOD_TO_GO" == "1"
 
 parquet_files = sorted(dataset_path.glob("data/*/*.parquet"))
-if not parquet_files:
+if not parquet_files and not good_to_go:
     print("[data] No data on disk yet — downloading everything...")
     while True:
         try:
@@ -82,6 +97,8 @@ if not parquet_files:
             else:
                 raise
     parquet_files = sorted(dataset_path.glob("data/*/*.parquet"))
+elif not parquet_files:
+    raise RuntimeError(f"No parquet files found at {dataset_path} — download the data first.")
 
 # Generate meta files from whatever parquet files exist on disk
 import pandas as pd
