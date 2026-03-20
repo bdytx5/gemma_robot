@@ -42,68 +42,55 @@ PYTHON=${PYTHON:-"$REPO_ROOT/.venv/bin/python"}
 echo "[python] Using: $PYTHON ($("$PYTHON" --version 2>&1))"
 
 # ── Step 1: Download dataset if not present ───────────────────────────────────
-echo "[data] Checking and downloading missing files from $HF_DATASET..."
+echo "[data] Downloading $HF_DATASET (retries on 429)..."
 "$PYTHON" - <<PYEOF
 import time
 from pathlib import Path
-from huggingface_hub import list_repo_tree, hf_hub_download
+from huggingface_hub import snapshot_download
 from huggingface_hub.errors import HfHubHTTPError
 
-dataset_path = Path("$DATASET_PATH")
+dataset_path = "$DATASET_PATH"
 repo_id = "$HF_DATASET"
+required = ["meta/info.json", "meta/episodes.jsonl", "meta/tasks.jsonl"]
 
-def hf_download_file(path):
-    while True:
-        try:
-            hf_hub_download(
-                repo_id=repo_id,
-                repo_type="dataset",
-                filename=path,
-                local_dir=str(dataset_path),
-            )
-            return
-        except HfHubHTTPError as e:
-            if "429" in str(e):
-                print(f"[data] Rate limited. Waiting 300s...")
-                time.sleep(300)
-            else:
-                raise
-
-print("[data] Fetching file list from HuggingFace...")
 while True:
     try:
-        all_files = [f.path for f in list_repo_tree(repo_id, repo_type="dataset", recursive=True) if f.path.endswith((".parquet", ".mp4", ".json", ".jsonl", ".md"))]
+        snapshot_download(
+            repo_id=repo_id,
+            repo_type="dataset",
+            local_dir=dataset_path,
+            max_workers=32,
+        )
         break
-    except HfHubHTTPError as e:
+    except Exception as e:
         if "429" in str(e):
-            print("[data] Rate limited fetching file list. Waiting 300s...")
+            print("[data] Rate limited (429). Waiting 300s...")
             time.sleep(300)
         else:
             raise
 
-missing = [f for f in all_files if not (dataset_path / f).exists()]
-print(f"[data] {len(all_files)} total files, {len(missing)} missing.")
-
-from concurrent.futures import ThreadPoolExecutor
-import threading
-lock = threading.Lock()
-done = [0]
-
-def fetch(path):
-    hf_download_file(path)
-    with lock:
-        done[0] += 1
-        if done[0] % 100 == 0:
-            print(f"[data] {done[0]}/{len(missing)} downloaded...")
-
+missing = [f for f in required if not (Path(dataset_path) / f).exists()]
 if missing:
-    with ThreadPoolExecutor(max_workers=32) as ex:
-        ex.map(fetch, missing)
+    print(f"[data] Still missing {missing}, retrying meta only...")
+    while True:
+        try:
+            snapshot_download(
+                repo_id=repo_id,
+                repo_type="dataset",
+                local_dir=dataset_path,
+                allow_patterns=["meta/*"],
+                max_workers=4,
+            )
+            break
+        except Exception as e:
+            if "429" in str(e):
+                time.sleep(300)
+            else:
+                raise
 
-required = ["meta/info.json", "meta/episodes.jsonl", "meta/tasks.jsonl"]
-still_missing = [f for f in required if not (dataset_path / f).exists()]
-if still_missing:
-    raise RuntimeError(f"Dataset still missing: {still_missing}")
+missing = [f for f in required if not (Path(dataset_path) / f).exists()]
+if missing:
+    raise RuntimeError(f"Dataset still missing: {missing}")
 
 print("[data] Download complete and verified.")
 PYEOF
