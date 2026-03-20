@@ -38,7 +38,7 @@ OUTPUT_DIR=${OUTPUT_DIR:-"./output/gr00t-eagle2_5-fractal"}
 MAX_STEPS=${MAX_STEPS:-20000}
 BASE_MODEL_PATH=${BASE_MODEL_PATH:-"youngbrett48/train_stage2_gemma3_270m.sh"}
 EMBODIMENT="OXE_GOOGLE"
-BACKBONE_EMBEDDING_DIM=1152  # Gemma3-270m hidden_size
+BACKBONE_EMBEDDING_DIM=640  # Gemma3-270m hidden_size (text_config.hidden_size)
 
 DATASET_PATH=${DATASET_PATH:-"examples/SimplerEnv/fractal20220817_data_lerobot"}
 MODALITY_SRC="examples/SimplerEnv/fractal_modality.json"
@@ -66,6 +66,7 @@ if [ ! -d "$EAGLE_REPO" ]; then
     exit 1
 fi
 export PYTHONPATH="$EAGLE_REPO:${PYTHONPATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 echo "[eagle] Eagle2.5 source: $EAGLE_REPO"
 
 # ── Step 2: Download dataset if not present ───────────────────────────────────
@@ -130,6 +131,16 @@ for col in df0.columns:
         features[col] = {"dtype": "float32", "shape": [len(val)], "names": None}
     else:
         features[col] = {"dtype": str(df0[col].dtype), "shape": [1], "names": None}
+
+# Filter episodes to only those with video files on disk
+video_keys = [vd.name for vd in sorted((dataset_path / "videos" / "chunk-000").iterdir())] if (dataset_path / "videos" / "chunk-000").exists() else []
+if video_keys:
+    vkey = video_keys[0]
+    episodes = {
+        ep_idx: ep for ep_idx, ep in episodes.items()
+        if (dataset_path / "videos" / f"chunk-{ep_idx // 1000:03d}" / vkey / f"episode_{ep_idx:06d}.mp4").exists()
+    }
+    total_frames = sum(ep["length"] for ep in episodes.values())
 
 # Add video features from actual folders on disk
 for video_dir in sorted((dataset_path / "videos" / "chunk-000").iterdir()):
@@ -196,7 +207,7 @@ if [ -n "$FIRST_VIDEO" ]; then
         -of default=nw=1:nk=1 "$FIRST_VIDEO" 2>/dev/null || echo "unknown")
     if [[ "$CODEC" == "av01" || "$CODEC" == "av1" ]]; then
         echo "[data] AV1 videos detected — converting to H.264..."
-        python examples/SimplerEnv/convert_av1_to_h264.py \
+        "$PYTHON" examples/SimplerEnv/convert_av1_to_h264.py \
             "$DATASET_PATH" --jobs "$(nproc)"
         echo "[data] Video conversion complete."
     else
@@ -241,21 +252,22 @@ echo "[train] GPUs=$NUM_GPUS  Steps=$MAX_STEPS  Embodiment=$EMBODIMENT"
 
 "$PYTHON" -m torch.distributed.run \
     --nproc_per_node=$NUM_GPUS \
-    --master_port=29500 \
+    --master_port=${MASTER_PORT:-29501} \
     $TRAIN_SCRIPT \
     --base_model_path "$BASE_MODEL_PATH" \
     --dataset_path "$DATASET_PATH" \
     --embodiment_tag $EMBODIMENT \
     --num_gpus $NUM_GPUS \
     --output_dir "$OUTPUT_DIR" \
-    --save_steps 1000 \
+    --save_steps 200 \
     --save_total_limit 5 \
     --max_steps $MAX_STEPS \
     --warmup_ratio 0.05 \
     --weight_decay 1e-5 \
     --learning_rate 1e-4 \
     --use_wandb \
-    --global_batch_size 512 \
+    --global_batch_size 32 \
+    --gradient_accumulation_steps 16 \
     --color_jitter_params brightness 0.3 contrast 0.4 saturation 0.5 hue 0.08 \
     --dataloader_num_workers 4 \
     --state_dropout_prob 0.5 \

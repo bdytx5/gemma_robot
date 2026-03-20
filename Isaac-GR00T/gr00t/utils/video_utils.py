@@ -49,7 +49,7 @@ _INCOMPATIBLE_BACKEND_CODECS: dict[str, set[str]] = {
 
 # Preferred fallback order when the requested backend is unavailable or incompatible.
 # pyav is intentionally excluded: it's "available" but not implemented in get_frames_by_indices.
-_BACKEND_FALLBACK_ORDER = ["torchcodec", "decord", "ffmpeg", "opencv"]
+_BACKEND_FALLBACK_ORDER = ["torchcodec", "decord", "opencv"]
 
 
 def _is_backend_available(backend: str) -> bool:

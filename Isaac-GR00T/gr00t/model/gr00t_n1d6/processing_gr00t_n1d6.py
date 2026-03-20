@@ -103,16 +103,13 @@ class _Eagle2_5ProcessorShim:
         self.max_tiles = max_tiles
         self.img_context_token_id = tokenizer.convert_tokens_to_ids(IMG_CONTEXT_TOKEN)
 
-        # GEMMA3 CHANGE: num_image_token calculation for Gemma3-270m Eagle2.5:
-        #   vision: siglip2-so400m-patch14-384 → patch_size=14, image_size=384
-        #   connector: pixel_shuffle with downsample_ratio=0.5
-        #   formula: (image_size // patch_size)^2 * downsample_ratio^2
-        #            = (384 // 14)^2 * 0.25 = 27^2 * 0.25 = 729 * 0.25 = 182
-        # This must match model.num_image_token from the Eagle2.5 checkpoint.
-        # If there's a mismatch the scatter step will warn and truncate.
+        # num_image_token: must match what the vision model actually produces after
+        # pixel_shuffle. SigLIP internally pads images to the nearest ceil(H/patch)*patch,
+        # so use ceil not floor: ceil(384/14)=28 → 28^2 * 0.25 = 196 tokens per tile.
+        import math
         patch_size = 14  # siglip2-so400m-patch14-384
         downsample_ratio = 0.5  # --down_sample_ratio 0.5 in train_stage2_gemma3_270m.sh
-        self.num_image_token = int((image_size // patch_size) ** 2 * (downsample_ratio ** 2))
+        self.num_image_token = int(math.ceil(image_size / patch_size) ** 2 * (downsample_ratio ** 2))
 
     def apply_chat_template(
         self, conversation: list, tokenize: bool = False, add_generation_prompt: bool = False
@@ -216,9 +213,11 @@ def build_processor(model_name: str, transformers_loading_kwargs: dict) -> Proce
         # save_pretrained include a valid tokenizer. Use trust_remote_code so the custom
         # tokenizer class is accepted.
         tok_kwargs["trust_remote_code"] = True
-        from transformers import GemmaTokenizerFast
+        from transformers import GemmaTokenizer
         clean_kwargs = {k: v for k, v in tok_kwargs.items() if k not in ("trust_remote_code",)}
-        tokenizer = GemmaTokenizerFast.from_pretrained("google/gemma-3-270m-it", **clean_kwargs)
+        # Use slow GemmaTokenizer loaded from the checkpoint so that special tokens
+        # like <IMG_CONTEXT> (id=262145) are correctly resolved.
+        tokenizer = GemmaTokenizer.from_pretrained(model_name, use_fast=False, **clean_kwargs)
         return _Eagle2_5ProcessorShim(tokenizer)
 
 

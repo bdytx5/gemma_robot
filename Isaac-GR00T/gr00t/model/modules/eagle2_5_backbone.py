@@ -95,9 +95,9 @@ class Eagle2_5Backbone(nn.Module):
     def _resolve_image_token_index(self, model_name: str, loading_kwargs: dict):
         """Load the tokenizer and resolve <IMG_CONTEXT> token id."""
         try:
-            from transformers import AutoTokenizer
-            tok_kwargs = {k: v for k, v in loading_kwargs.items() if k not in ("torch_dtype", "attn_implementation")}
-            tokenizer = AutoTokenizer.from_pretrained(model_name, **tok_kwargs)
+            from transformers import GemmaTokenizer
+            tok_kwargs = {k: v for k, v in loading_kwargs.items() if k not in ("torch_dtype", "attn_implementation", "trust_remote_code")}
+            tokenizer = GemmaTokenizer.from_pretrained(model_name, use_fast=False, **tok_kwargs)
             idx = tokenizer.convert_tokens_to_ids(IMG_CONTEXT_TOKEN)
             if idx is not None and idx != tokenizer.unk_token_id:
                 self.model.image_token_index = idx
@@ -221,7 +221,7 @@ class Eagle2_5Backbone(nn.Module):
         # Expand selected mask to (B*N, C) for masked_scatter
         input_embeds_flat = input_embeds.reshape(B * N, C).clone()
         mask_expanded = selected.unsqueeze(1).expand_as(input_embeds_flat)
-        input_embeds_flat = input_embeds_flat.masked_scatter(mask_expanded, vit_flat)
+        input_embeds_flat = input_embeds_flat.masked_scatter(mask_expanded, vit_flat.to(input_embeds_flat.dtype))
         input_embeds = input_embeds_flat.reshape(B, N, C)
 
         # 5. Run LM trunk
