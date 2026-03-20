@@ -264,9 +264,16 @@ class ShardedSingleStepDataset(ShardedDataset):
         datapoints = []
         for ep_idx, step_indices in episodes:
             # Load episode data once per episode in shard
-            episode_data = self.episode_loader[ep_idx]
+            try:
+                episode_data = self.episode_loader[ep_idx]
+            except Exception as e:
+                print(f"[ShardedSingleStepDataset] WARNING: skipping episode {ep_idx} — load failed: {e}")
+                continue
             for step_index in step_indices:
-                datapoints.append(self.get_datapoint(episode_data, step_index))
+                try:
+                    datapoints.append(self.get_datapoint(episode_data, step_index))
+                except Exception as e:
+                    print(f"[ShardedSingleStepDataset] WARNING: skipping ep {ep_idx} step {step_index} — {e}")
         return datapoints
 
     def get_dataset_statistics(self) -> dict:
