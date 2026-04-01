@@ -24,9 +24,9 @@ MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 TOTAL_GPUS=$((GPUS * NNODES))
 
 BATCH_SIZE=3
-TOKEN_PER_GPU=4096
-GRADIENT_ACC=${GRADIENT_ACC:-2}
-
+TOKEN_PER_GPU=16384
+GRADIENT_ACC=${GRADIENT_ACC:-32}
+PDBS=1
 LOSS_VERSION="efficient_v2_cp_head"
 
 if [ ! -d "$OUTPUT_DIR" ]; then
@@ -87,7 +87,7 @@ torchrun \
   --bf16 True \
   --use_online_packing True \
   --num_train_epochs 1 \
-  --per_device_train_batch_size $BATCH_SIZE \
+  --per_device_train_batch_size $PDBS \
   --gradient_accumulation_steps ${GRADIENT_ACC} \
   --save_strategy "steps" \
   --save_steps 250 \

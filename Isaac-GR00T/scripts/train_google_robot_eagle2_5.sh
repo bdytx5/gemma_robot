@@ -36,9 +36,9 @@ done
 NUM_GPUS=${NUM_GPUS:-1}
 OUTPUT_DIR=${OUTPUT_DIR:-"./output/gr00t-eagle2_5-fractal"}
 MAX_STEPS=${MAX_STEPS:-20000}
-BASE_MODEL_PATH=${BASE_MODEL_PATH:-"youngbrett48/train_stage2_gemma3_270m.sh"}
+BASE_MODEL_PATH=${BASE_MODEL_PATH:-"youngbrett48/train_stage2_gemma3_1b.sh"}
 EMBODIMENT="OXE_GOOGLE"
-BACKBONE_EMBEDDING_DIM=640  # Gemma3-270m hidden_size (text_config.hidden_size)
+BACKBONE_EMBEDDING_DIM=1152  # Gemma3-1b hidden_size (text_config.hidden_size)
 
 SCRIPT_NAME=$(basename "${BASH_SOURCE[0]}" .sh)
 export HF_REPO_ID=${HF_REPO_ID:-"youngbrett48/$SCRIPT_NAME"}
@@ -248,7 +248,13 @@ else
     TRAIN_SCRIPT="gr00t/experiment/launch_finetune.py"
 fi
 
-# ── Step 6: Train ─────────────────────────────────────────────────────────────
+# ── Step 6: Start eval watcher in background ────────────────────────────────
+echo "[eval] Starting eval watcher in background..."
+bash scripts/eval_watcher.sh "$OUTPUT_DIR" > "${OUTPUT_DIR}/eval_watcher.log" 2>&1 &
+EVAL_PID=$!
+echo "[eval] Watcher PID: $EVAL_PID  (log: ${OUTPUT_DIR}/eval_watcher.log)"
+
+# ── Step 7: Train ─────────────────────────────────────────────────────────────
 echo "[train] Starting finetuning with Eagle2.5+Gemma3 backbone"
 echo "[train] Base model: $BASE_MODEL_PATH"
 echo "[train] GPUs=$NUM_GPUS  Steps=$MAX_STEPS  Embodiment=$EMBODIMENT"
@@ -279,3 +285,9 @@ echo "[train] GPUs=$NUM_GPUS  Steps=$MAX_STEPS  Embodiment=$EMBODIMENT"
     --tune_llm
 
 echo "[done] Checkpoint saved to $OUTPUT_DIR"
+
+# Kill eval watcher when training finishes
+if kill -0 $EVAL_PID 2>/dev/null; then
+    echo "[eval] Stopping eval watcher (PID $EVAL_PID)..."
+    kill $EVAL_PID 2>/dev/null
+fi
