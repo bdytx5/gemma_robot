@@ -68,7 +68,7 @@ def start_server(checkpoint_path: str, port: int, embodiment: str) -> subprocess
     return subprocess.Popen(cmd, env=env)
 
 
-def run_env(env_name: str, port: int, n_episodes: int, video_dir: str, result_json: str) -> dict:
+def run_env(env_name: str, port: int, n_episodes: int, video_dir: str, result_json: str, seed: int = 42) -> dict:
     rollout_python = str(SIMPLER_PYTHON) if SIMPLER_PYTHON.exists() else str(VENV_PYTHON)
     cmd = [
         rollout_python,
@@ -82,6 +82,7 @@ def run_env(env_name: str, port: int, n_episodes: int, video_dir: str, result_js
         "--policy_client_port", str(port),
         "--output_json", result_json,
         "--video_dir", video_dir,
+        "--seed", str(seed),
     ]
     env = os.environ.copy()
     Path(video_dir).mkdir(parents=True, exist_ok=True)
@@ -163,6 +164,8 @@ def main():
                         help="Fixed W&B run ID to resume (all checkpoints log to one run). "
                              "Auto-derived from output dir name if not set.")
     parser.add_argument("--no_wandb", action="store_true", help="Skip W&B logging")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Base seed for deterministic eval (each env gets base_seed + env_index)")
     args = parser.parse_args()
 
     step = args.step if args.step is not None else detect_step(args.checkpoint_path)
@@ -183,12 +186,13 @@ def main():
         print("[eval] Server ready.")
 
         all_results = []
-        for env_name in args.envs:
+        for env_idx, env_name in enumerate(args.envs):
             env_short = env_name.split("/")[-1]
             env_video_dir = os.path.join(video_root, env_short)
             result_json = os.path.join(env_video_dir, "result.json")
+            env_seed = args.seed + env_idx  # deterministic per-env seed
             try:
-                result = run_env(env_name, args.port, args.n_episodes, env_video_dir, result_json)
+                result = run_env(env_name, args.port, args.n_episodes, env_video_dir, result_json, seed=env_seed)
             except subprocess.TimeoutExpired:
                 result = {"env_name": env_name, "success_rate": None, "error": "timeout"}
             result["step"] = step

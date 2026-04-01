@@ -63,7 +63,10 @@ class GoogleFractalEnv(gym.Env):
         self.sticky_action_is_on = False
         self.sticky_gripper_action = 0.0
         self.gripper_action_repeat = 0
-        observation, info = self.env.reset()
+        if seed is not None:
+            self.env.unwrapped._main_seed = seed
+            np.random.seed(seed)
+        observation, info = self.env.reset(seed=seed)
         observation = self._process_observation(observation)
         info["success"] = False
         return observation, info
@@ -166,7 +169,10 @@ class WidowXBridgeEnv(gym.Env):
         self.default_rot = np.array([[0, 0, 1.0], [0, 1.0, 0], [-1.0, 0, 0]])
 
     def reset(self, seed=None, options=None):
-        observation, info = self.env.reset()
+        if seed is not None:
+            self.env.unwrapped._main_seed = seed
+            np.random.seed(seed)
+        observation, info = self.env.reset(seed=seed)
         observation = self._process_observation(observation)
         info["success"] = False
         return observation, info
