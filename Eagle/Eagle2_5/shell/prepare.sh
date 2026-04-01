@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -x
+export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GPUS=${GPUS:-1}
 
 META_PATH=${1:-"local_playground/recipe/stage1.json"}

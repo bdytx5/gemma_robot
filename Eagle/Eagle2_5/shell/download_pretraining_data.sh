@@ -10,6 +10,8 @@
 #
 # Set HF_TOKEN env var for authenticated downloads.
 
+set -o pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EAGLE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 GROOT_ROOT="$(cd "$EAGLE_ROOT/../../Isaac-GR00T" 2>/dev/null && pwd || echo "")"
@@ -102,7 +104,7 @@ fi
 # ═══════════════════════════════════════════════════════════════════════════════
 if [ "$DO_STAGE1" = "1" ]; then
     banner "STAGE 1 — Download: LLaVA-CC3M-Pretrain-595K"
-    if [ -f "$STAGE1_DATA_DIR/blip_laion_cc_sbu_558k.json" ]; then
+    if [ -f "$STAGE1_DATA_DIR/chat.jsonl" ]; then
         skip "Already present at $STAGE1_DATA_DIR ($(du -sh "$STAGE1_DATA_DIR" | cut -f1))"
     else
         step "Downloading liuhaotian/LLaVA-CC3M-Pretrain-595K..."
@@ -119,6 +121,39 @@ snapshot_download(
   || fail "LLaVA-CC3M download failed"
     fi
 
+    # Extract images from zip if needed
+    banner "STAGE 1 — Extract: images from images.zip"
+    STAGE1_IMG_COUNT=$(ls "$STAGE1_DATA_DIR"/*.jpg 2>/dev/null | wc -l)
+    if [ "$STAGE1_IMG_COUNT" -gt 100 ]; then
+        skip "Images already extracted ($STAGE1_IMG_COUNT .jpg files)"
+    elif [ -f "$STAGE1_DATA_DIR/images.zip" ]; then
+        step "Extracting images.zip (595K images)..."
+        "$PYTHON" -c "
+import zipfile
+z = zipfile.ZipFile('$STAGE1_DATA_DIR/images.zip')
+z.extractall('$STAGE1_DATA_DIR/')
+print(f'  Extracted {len(z.namelist())} files')
+" && ok "Images extracted" \
+  || fail "Image extraction failed"
+    else
+        fail "No images.zip found in $STAGE1_DATA_DIR"
+    fi
+
+    # Convert chat.json → chat.jsonl (prepare.sh requires JSONL)
+    if [ ! -f "$STAGE1_DATA_DIR/chat.jsonl" ] && [ -f "$STAGE1_DATA_DIR/chat.json" ]; then
+        step "Converting chat.json → chat.jsonl..."
+        "$PYTHON" -c "
+import json
+with open('$STAGE1_DATA_DIR/chat.json') as f:
+    data = json.load(f)
+with open('$STAGE1_DATA_DIR/chat.jsonl', 'w') as f:
+    for entry in data:
+        f.write(json.dumps(entry) + '\n')
+print(f'  Converted {len(data)} entries')
+" && ok "chat.jsonl created" \
+  || fail "JSON→JSONL conversion failed"
+    fi
+
     banner "STAGE 1 — Prepare: tokenize + pack → stage1.prepared.json"
     STAGE1_PREPARED="$RECIPE_DIR/stage1.prepared.json"
     if [ -f "$STAGE1_PREPARED" ]; then
@@ -132,7 +167,7 @@ snapshot_download(
             cat > "$STAGE1_RECIPE" <<'EOF'
 {
   "LLaVA-CC3M-Pretrain-595K": {
-    "annotation": "./data/pretrain/blip_laion_cc_sbu_558k.json",
+    "annotation": "./data/pretrain/chat.jsonl",
     "root": "./data/pretrain",
     "repeat_time": 1
   }
