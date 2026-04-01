@@ -23,8 +23,8 @@ MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 
 TOTAL_GPUS=$((GPUS * NNODES))
 
-BATCH_SIZE=1
-TOKEN_PER_GPU=65536
+BATCH_SIZE=3
+TOKEN_PER_GPU=4096
 GRADIENT_ACC=${GRADIENT_ACC:-2}
 
 LOSS_VERSION="efficient_v2_cp_head"
@@ -105,7 +105,7 @@ torchrun \
   --group_by_length True \
   --dynamic_image_size True \
   --use_thumbnail True \
-  --deepspeed "deepspeed_configs/zero_stage2_config.json" \
+  --deepspeed "deepspeed_configs/zero_stage3_config.json" \
   --loss_version ${LOSS_VERSION} \
   --report_to "wandb" \
   --run_name $script_name \
