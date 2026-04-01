@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 set -x
 
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
+
 export NCCL_TIMEOUT=1800
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export WANDB_PROJECT="eagle-gemma3"
 export LAUNCHER=pytorch
 export PYTHONPATH="/home/ubuntu/gemma_robot/Eagle/Eagle2_5:${PYTHONPATH:-}"
 
+GPUS=${GPUS:-$(nvidia-smi -L 2>/dev/null | wc -l)}
 GPUS=${GPUS:-1}
 NNODES=${1:-1}
 OUTPUT_DIR=${2:-"./output/stage2_gemma3_1b"}
