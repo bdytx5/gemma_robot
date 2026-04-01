@@ -40,6 +40,9 @@ BASE_MODEL_PATH=${BASE_MODEL_PATH:-"youngbrett48/train_stage2_gemma3_270m.sh"}
 EMBODIMENT="OXE_GOOGLE"
 BACKBONE_EMBEDDING_DIM=640  # Gemma3-270m hidden_size (text_config.hidden_size)
 
+SCRIPT_NAME=$(basename "${BASH_SOURCE[0]}" .sh)
+export HF_REPO_ID=${HF_REPO_ID:-"youngbrett48/$SCRIPT_NAME"}
+
 DATASET_PATH=${DATASET_PATH:-"examples/SimplerEnv/fractal20220817_data_lerobot"}
 MODALITY_SRC="examples/SimplerEnv/fractal_modality.json"
 MODALITY_DST="${DATASET_PATH}/meta/modality.json"
