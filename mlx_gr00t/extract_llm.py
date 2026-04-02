@@ -14,20 +14,40 @@ import shutil
 from pathlib import Path
 
 import torch
-from huggingface_hub import snapshot_download
+from huggingface_hub import snapshot_download, list_repo_files, hf_hub_download
+from tqdm import tqdm
 
 
 def extract(gr00t_repo: str, checkpoint: str, out_dir: str, token: str | None = None):
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    print(f"[1/4] Downloading {gr00t_repo}/{checkpoint} from HuggingFace...")
-    ckpt_dir = snapshot_download(
-        repo_id=gr00t_repo,
-        allow_patterns=[f"{checkpoint}/*"],
-        token=token or True,
-    )
-    ckpt_path = Path(ckpt_dir) / checkpoint
+    tok = token or True
+    print(f"[1/4] Listing files in {gr00t_repo}/{checkpoint}...")
+    all_files = [f for f in list_repo_files(gr00t_repo, token=tok)
+                 if f.startswith(f"{checkpoint}/")]
+    print(f"  {len(all_files)} files to download:")
+    for f in all_files:
+        print(f"    {f}")
+
+    print(f"\n  Downloading (this is ~10GB, will take a few minutes)...")
+    local_files = []
+    for f in tqdm(all_files, desc="  files", unit="file"):
+        local_path = hf_hub_download(
+            repo_id=gr00t_repo,
+            filename=f,
+            token=tok,
+        )
+        local_files.append(local_path)
+        tqdm.write(f"  ✓ {f}")
+
+    # All files land in the same HF cache dir — derive ckpt_path from first file
+    ckpt_path = Path(local_files[0]).parent
+    # Normalize to the checkpoint subfolder
+    while ckpt_path.name != checkpoint and ckpt_path.parent != ckpt_path:
+        ckpt_path = ckpt_path.parent
+    if ckpt_path.name != checkpoint:
+        ckpt_path = Path(local_files[0]).parent
 
     # GR00T saves a pytorch_model.bin or model.safetensors at checkpoint root
     bin_path = ckpt_path / "pytorch_model.bin"
