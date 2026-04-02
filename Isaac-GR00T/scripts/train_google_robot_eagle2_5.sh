@@ -34,7 +34,7 @@ done
 
 # ── Config ────────────────────────────────────────────────────────────────────
 NUM_GPUS=${NUM_GPUS:-1}
-OUTPUT_DIR=${OUTPUT_DIR:-"./output/gr00t-eagle2_5-fractal"}
+OUTPUT_DIR=${OUTPUT_DIR:-"./output/gr00t-eagle2_5-gemma3-1b-fractal"}
 MAX_STEPS=${MAX_STEPS:-20000}
 BASE_MODEL_PATH=${BASE_MODEL_PATH:-"youngbrett48/train_stage2_gemma3_1b.sh"}
 EMBODIMENT="OXE_GOOGLE"
@@ -77,6 +77,9 @@ if [ "$GOOD_TO_GO" = "1" ]; then
     echo "[data] --good flag set — skipping download, using existing data."
 fi
 
+if [ "$GOOD_TO_GO" = "1" ] && [ -f "$DATASET_PATH/meta/info.json" ]; then
+    echo "[data] Meta files already exist — skipping regeneration."
+else
 echo "[data] Preparing dataset from $HF_DATASET..."
 "$PYTHON" - <<PYEOF
 import time, json
@@ -192,6 +195,7 @@ with open(dataset_path / "meta/tasks.jsonl", "w") as f:
 
 print(f"[data] Ready: {len(episodes)} episodes, {total_frames} frames from {len(parquet_files)} parquet files.")
 PYEOF
+fi
 
 # ── Step 3: Copy modality.json if missing ─────────────────────────────────────
 if [ ! -f "$MODALITY_DST" ]; then
@@ -203,18 +207,22 @@ else
 fi
 
 # ── Step 4: Convert AV1 videos to H.264 if needed ────────────────────────────
-FIRST_VIDEO=$(find "$DATASET_PATH/videos" -name "*.mp4" 2>/dev/null | head -1)
-if [ -n "$FIRST_VIDEO" ]; then
-    CODEC=$(ffprobe -v error -select_streams v:0 \
-        -show_entries stream=codec_name \
-        -of default=nw=1:nk=1 "$FIRST_VIDEO" 2>/dev/null || echo "unknown")
-    if [[ "$CODEC" == "av01" || "$CODEC" == "av1" ]]; then
-        echo "[data] AV1 videos detected — converting to H.264..."
-        "$PYTHON" examples/SimplerEnv/convert_av1_to_h264.py \
-            "$DATASET_PATH" --jobs "$(nproc)"
-        echo "[data] Video conversion complete."
-    else
-        echo "[data] Videos already H.264 — skipping conversion."
+if [ "$GOOD_TO_GO" = "1" ]; then
+    echo "[data] --good flag — skipping AV1 conversion check."
+else
+    FIRST_VIDEO=$(find "$DATASET_PATH/videos" -name "*.mp4" 2>/dev/null | head -1)
+    if [ -n "$FIRST_VIDEO" ]; then
+        CODEC=$(ffprobe -v error -select_streams v:0 \
+            -show_entries stream=codec_name \
+            -of default=nw=1:nk=1 "$FIRST_VIDEO" 2>/dev/null || echo "unknown")
+        if [[ "$CODEC" == "av01" || "$CODEC" == "av1" ]]; then
+            echo "[data] AV1 videos detected — converting to H.264..."
+            "$PYTHON" examples/SimplerEnv/convert_av1_to_h264.py \
+                "$DATASET_PATH" --jobs "$(nproc)"
+            echo "[data] Video conversion complete."
+        else
+            echo "[data] Videos already H.264 — skipping conversion."
+        fi
     fi
 fi
 
@@ -248,11 +256,18 @@ else
     TRAIN_SCRIPT="gr00t/experiment/launch_finetune.py"
 fi
 
-# ── Step 6: Start eval watcher in background ────────────────────────────────
-echo "[eval] Starting eval watcher in background..."
-bash scripts/eval_watcher.sh "$OUTPUT_DIR" > "${OUTPUT_DIR}/eval_watcher.log" 2>&1 &
-EVAL_PID=$!
-echo "[eval] Watcher PID: $EVAL_PID  (log: ${OUTPUT_DIR}/eval_watcher.log)"
+# ── Step 6: Start eval watcher in background (optional) ──────────────────────
+TRAIN_GPU=${TRAIN_GPU:-0}
+EVAL_GPU=${EVAL_GPU:-1}
+if [ "${SKIP_EVAL_WATCHER:-0}" != "1" ]; then
+    echo "[eval] Starting eval watcher in background on GPU $EVAL_GPU (training on GPU $TRAIN_GPU)..."
+    CUDA_VISIBLE_DEVICES=$EVAL_GPU bash scripts/eval_watcher.sh "$OUTPUT_DIR" > "${OUTPUT_DIR}/eval_watcher.log" 2>&1 &
+    EVAL_PID=$!
+    echo "[eval] Watcher PID: $EVAL_PID  (log: ${OUTPUT_DIR}/eval_watcher.log)"
+else
+    echo "[eval] Eval watcher disabled (SKIP_EVAL_WATCHER=1). Run separately on GPU $EVAL_GPU after training."
+    EVAL_PID=""
+fi
 
 # ── Step 7: Train ─────────────────────────────────────────────────────────────
 echo "[train] Starting finetuning with Eagle2.5+Gemma3 backbone"
@@ -287,7 +302,7 @@ echo "[train] GPUs=$NUM_GPUS  Steps=$MAX_STEPS  Embodiment=$EMBODIMENT"
 echo "[done] Checkpoint saved to $OUTPUT_DIR"
 
 # Kill eval watcher when training finishes
-if kill -0 $EVAL_PID 2>/dev/null; then
+if [ -n "$EVAL_PID" ] && kill -0 $EVAL_PID 2>/dev/null; then
     echo "[eval] Stopping eval watcher (PID $EVAL_PID)..."
     kill $EVAL_PID 2>/dev/null
 fi

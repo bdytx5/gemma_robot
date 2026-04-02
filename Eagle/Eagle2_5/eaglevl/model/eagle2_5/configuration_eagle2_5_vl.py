@@ -123,6 +123,7 @@ class Eagle2_5_VLConfig(PretrainedConfig):
         self.image_token_index = image_token_index
         self.use_pixel_shuffle = use_pixel_shuffle
         self.mlp_connector_layers = mlp_connector_layers
+        self.initializer_range = kwargs.get('initializer_range', 0.02)
         logger.info(f'min_dynamic_tiles: {self.min_dynamic_tiles}')
         logger.info(f'max_dynamic_tiles: {self.max_dynamic_tiles}')
 
