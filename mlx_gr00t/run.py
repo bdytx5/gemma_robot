@@ -33,18 +33,18 @@ MLX_LLM_DIR = HERE / "gr00t_llm_mlx"
 # ---------------------------------------------------------------------------
 # Step 1: Extract LLM weights from GR00T HF checkpoint
 # ---------------------------------------------------------------------------
-def maybe_extract(gr00t_ckpt: str, checkpoint: str, force: bool):
+def maybe_extract(gr00t_ckpt: str, checkpoint: str, force: bool, hf_token: str | None = None):
     if HF_LLM_DIR.exists() and (HF_LLM_DIR / "model.safetensors").exists() and not force:
         print(f"[extract] Already done → {HF_LLM_DIR}  (use --force to redo)")
         return
     print("[extract] Extracting Gemma3-1b weights from GR00T checkpoint...")
-    subprocess.run(
-        [sys.executable, str(HERE / "extract_llm.py"),
-         "--gr00t_repo", gr00t_ckpt,
-         "--checkpoint", checkpoint,
-         "--out_dir", str(HF_LLM_DIR)],
-        check=True,
-    )
+    cmd = [sys.executable, str(HERE / "extract_llm.py"),
+           "--gr00t_repo", gr00t_ckpt,
+           "--checkpoint", checkpoint,
+           "--out_dir", str(HF_LLM_DIR)]
+    if hf_token:
+        cmd += ["--hf_token", hf_token]
+    subprocess.run(cmd, check=True)
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +133,7 @@ def main():
     p.add_argument("--eagle2_5_repo", default="youngbrett48/train_stage2_gemma3_1b.sh")
 
     # Misc
+    p.add_argument("--hf_token", default=None, help="HuggingFace token for private repos")
     p.add_argument("--force", action="store_true",
                    help="Re-extract and re-convert even if cached artifacts exist")
     p.add_argument("--n_diffusion_steps", type=int, default=4)
@@ -140,7 +141,7 @@ def main():
     args = p.parse_args()
 
     # ---- Step 1: extract ----
-    maybe_extract(args.gr00t_ckpt, args.checkpoint, args.force)
+    maybe_extract(args.gr00t_ckpt, args.checkpoint, args.force, args.hf_token)
 
     # ---- Step 2: convert ----
     maybe_convert(args.force)

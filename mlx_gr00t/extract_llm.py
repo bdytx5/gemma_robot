@@ -17,7 +17,7 @@ import torch
 from huggingface_hub import snapshot_download
 
 
-def extract(gr00t_repo: str, checkpoint: str, out_dir: str):
+def extract(gr00t_repo: str, checkpoint: str, out_dir: str, token: str | None = None):
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -25,7 +25,7 @@ def extract(gr00t_repo: str, checkpoint: str, out_dir: str):
     ckpt_dir = snapshot_download(
         repo_id=gr00t_repo,
         allow_patterns=[f"{checkpoint}/*"],
-        token=True,
+        token=token or True,
     )
     ckpt_path = Path(ckpt_dir) / checkpoint
 
@@ -101,5 +101,6 @@ if __name__ == "__main__":
     p.add_argument("--checkpoint", default="checkpoint-200",
                    help="Checkpoint subfolder name in the HF repo")
     p.add_argument("--out_dir", default="./gr00t_llm_hf")
+    p.add_argument("--hf_token", default=None, help="HuggingFace token (or run `huggingface-cli login` once)")
     args = p.parse_args()
-    extract(args.gr00t_repo, args.checkpoint, args.out_dir)
+    extract(args.gr00t_repo, args.checkpoint, args.out_dir, token=args.hf_token)
