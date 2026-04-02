@@ -120,6 +120,7 @@ def log_to_wandb(results: list[dict], video_root: str, step: int, project: str, 
     )
 
     log = {}
+    table_data = []
     for r in results:
         env_short = r["env_name"].split("/")[-1]
         sr = r.get("success_rate")
@@ -128,6 +129,10 @@ def log_to_wandb(results: list[dict], video_root: str, step: int, project: str, 
         if r.get("episode_successes"):
             log[f"eval/{env_short}/n_success"] = sum(r["episode_successes"])
             log[f"eval/{env_short}/n_episodes"] = len(r["episode_successes"])
+        # Log task description so we can verify determinism across checkpoints
+        if r.get("task_description"):
+            log[f"eval/{env_short}/task_description"] = r["task_description"]
+        table_data.append([step, env_short, sr, r.get("task_description", "")])
 
         # One video panel per env — log each episode video under eval/video/<env>
         env_video_dir = Path(video_root) / env_short
@@ -135,14 +140,20 @@ def log_to_wandb(results: list[dict], video_root: str, step: int, project: str, 
         for i, vf in enumerate(ep_videos):
             log[f"eval/video/{env_short}/ep{i:02d}"] = wandb.Video(str(vf), fps=10, format="mp4")
 
-    # aggregate mean across envs
+    # Aggregate mean across envs
     rates = [r["success_rate"] for r in results if r.get("success_rate") is not None]
     if rates:
         log["eval/mean_success_rate"] = sum(rates) / len(rates)
 
+    # Summary table for this checkpoint
+    table = wandb.Table(columns=["step", "env", "success_rate", "task_description"], data=table_data)
+    log["eval/results_table"] = table
+
     run.log(log, step=step)
     run.finish()
     print(f"[eval] Logged to W&B run '{run_id}': step={step}, mean_success={log.get('eval/mean_success_rate')}")
+    for row in table_data:
+        print(f"  {row[1]}: {row[2]:.1%} — \"{row[3]}\"" if row[2] is not None else f"  {row[1]}: ERROR")
 
 
 def detect_step(checkpoint_path: str) -> int:
