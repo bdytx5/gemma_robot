@@ -25,6 +25,7 @@ def extract(gr00t_repo: str, checkpoint: str, out_dir: str):
     ckpt_dir = snapshot_download(
         repo_id=gr00t_repo,
         allow_patterns=[f"{checkpoint}/*"],
+        token=True,
     )
     ckpt_path = Path(ckpt_dir) / checkpoint
 
