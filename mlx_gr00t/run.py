@@ -110,10 +110,12 @@ def get_image(image_path: str | None, url: str | None, webcam: bool):
 def main():
     p = argparse.ArgumentParser()
 
-    # Image source (mutually exclusive)
-    img_group = p.add_mutually_exclusive_group(required=True)
+    # Image source (mutually exclusive, defaults to test image URL)
+    DEFAULT_TEST_IMAGE = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQThMxfZLtrpL_JSq6ttJo64D7nVKCGFHvKJg&s"
+    img_group = p.add_mutually_exclusive_group(required=False)
     img_group.add_argument("--image", help="Path to image file (jpg/png)")
-    img_group.add_argument("--url", help="Download image from a URL")
+    img_group.add_argument("--url", default=DEFAULT_TEST_IMAGE,
+                           help="Download image from a URL (default: test image)")
     img_group.add_argument("--webcam", action="store_true", help="Capture one frame from webcam")
 
     # Robot inputs
