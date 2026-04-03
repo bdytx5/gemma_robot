@@ -103,6 +103,11 @@ class Gr00tN1d6Pipeline(ModelPipeline):
                 self.config.model, transformers_loading_kwargs=self.transformers_loading_kwargs
             )
 
+        # Optionally load a pretrained action head (e.g. from nvidia/GR00T-N1.6-fractal)
+        pretrained_head = getattr(self.config.model, "load_pretrained_action_head", None)
+        if pretrained_head:
+            self._load_pretrained_action_head(model, pretrained_head)
+
         print(colored(f"Model Config: {model.config}", "yellow"))
         if get_rank() == 0:
             with open(self.save_cfg_dir / "final_model_config.json", "w") as f:
@@ -117,6 +122,44 @@ class Gr00tN1d6Pipeline(ModelPipeline):
         print("Model: ", model)
 
         return model
+
+    @staticmethod
+    def _load_pretrained_action_head(model, repo_id: str):
+        """Load action head weights from a pretrained HF checkpoint (e.g. nvidia/GR00T-N1.6-fractal).
+
+        Loads all action_head.* keys with strict=False so that new layers
+        like backbone_proj (not present in the pretrained checkpoint) keep
+        their random initialization.
+        """
+        import json
+        from huggingface_hub import hf_hub_download
+        from safetensors.torch import load_file
+
+        print(colored(f"[setup] Loading pretrained action head from: {repo_id}", "cyan"))
+
+        idx_path = hf_hub_download(repo_id, "model.safetensors.index.json")
+        with open(idx_path) as f:
+            weight_map = json.load(f)["weight_map"]
+
+        # Find shards that contain action_head keys
+        needed_shards = {v for k, v in weight_map.items() if k.startswith("action_head.")}
+        action_state = {}
+        for shard in needed_shards:
+            shard_path = hf_hub_download(repo_id, shard)
+            for k, v in load_file(shard_path).items():
+                if k.startswith("action_head."):
+                    action_state[k] = v
+
+        # Strip "action_head." prefix to load into the sub-module directly
+        head_state = {k.removeprefix("action_head."): v for k, v in action_state.items()}
+        result = model.action_head.load_state_dict(head_state, strict=False)
+
+        loaded = len(head_state) - len(result.unexpected_keys)
+        print(colored(f"[setup] Loaded {loaded} action head params from {repo_id}", "cyan"))
+        if result.missing_keys:
+            print(colored(f"[setup] Missing (will be trained from scratch): {result.missing_keys}", "yellow"))
+        if result.unexpected_keys:
+            print(colored(f"[setup] Unexpected (ignored): {result.unexpected_keys}", "yellow"))
 
     def _get_statistics(self) -> dict[str, dict[str, dict[str, dict[str, list[float]]]]] | None:
         return None

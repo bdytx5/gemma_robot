@@ -23,6 +23,8 @@ class Gr00tN1d6Config(PretrainedConfig):
     model_revision: str | None = None
     tune_top_llm_layers: int = 4  # Number of top LLM layers to tune
     backbone_embedding_dim: int = 2048  # project_to_dim
+    backbone_proj_dim: int = 0  # if >0, add a linear projection from backbone_proj_dim → backbone_embedding_dim
+    load_pretrained_action_head: str | None = None  # HF repo to load action head from (e.g. "nvidia/GR00T-N1.6-fractal")
     tune_llm: bool = False
     tune_visual: bool = False
     select_layer: int = 16

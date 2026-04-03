@@ -257,6 +257,13 @@ def run_rollout_gymnasium_policy(
     n_episodes = max(n_episodes, n_envs)
     print(f"Running collecting {n_episodes} episodes for {env_name} with {n_envs} vec envs")
 
+    # Seed BEFORE env construction so simpler_env.make() picks the same
+    # object variants, textures, and camera angles across eval runs.
+    if seed is not None:
+        import random as _random
+        np.random.seed(seed)
+        _random.seed(seed)
+
     env_fns = [
         partial(
             create_eval_env,
@@ -286,11 +293,8 @@ def run_rollout_gymnasium_policy(
     episode_successes = []
     episode_infos = defaultdict(list)
 
-    # Initial reset — use deterministic seed so every eval run sees the same env state
+    # Initial reset with deterministic seed
     if seed is not None:
-        import random as _random
-        np.random.seed(seed)
-        _random.seed(seed)
         observations, _ = env.reset(seed=seed)
     else:
         observations, _ = env.reset()

@@ -63,6 +63,16 @@ class Gr00tN1d6ActionHead(nn.Module):
             output_dim=self.action_dim,
         )
 
+        # Optional linear projection when backbone dim != action head dim
+        # (e.g. 640-dim Gemma3-270m backbone → 2048-dim N1.6 action head)
+        if getattr(config, "backbone_proj_dim", 0) > 0:
+            self.backbone_proj = nn.Linear(
+                config.backbone_proj_dim, config.backbone_embedding_dim, bias=False
+            )
+            nn.init.xavier_uniform_(self.backbone_proj.weight)
+        else:
+            self.backbone_proj = None
+
         self.vlln = (
             nn.LayerNorm(config.backbone_embedding_dim) if config.use_vlln else nn.Identity()
         )
@@ -142,6 +152,8 @@ class Gr00tN1d6ActionHead(nn.Module):
 
     def process_backbone_output(self, backbone_output: BatchFeature) -> BatchFeature:
         backbone_features = backbone_output["backbone_features"]
+        if self.backbone_proj is not None:
+            backbone_features = self.backbone_proj(backbone_features)
         backbone_features = self.vlln(backbone_features)
         backbone_output["backbone_features"] = backbone_features
         return backbone_output

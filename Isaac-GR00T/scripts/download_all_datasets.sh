@@ -204,20 +204,54 @@ fi
 echo ""
 
 # =============================================
+# 9-14. NVIDIA single_panda_gripper tasks (robocasa_panda_omron)
+# Individual repos from GR00T-Dateset on HuggingFace
+# These are the most relevant tasks for SimplerEnv eval
+# =============================================
+PANDA_TASKS=(
+    "single_panda_gripper-OpenDrawer"
+    "single_panda_gripper-OpenDoubleDoor"
+    "single_panda_gripper-OpenSingleDoor"
+    "single_panda_gripper-CloseDrawer"
+    "single_panda_gripper-PnPCabToCounter"
+    "single_panda_gripper-PnPCounterToCab"
+    "single_panda_gripper-PnPCounterToMicrowave"
+    "single_panda_gripper-PnPMicrowaveToCounter"
+)
+
+TASK_NUM=9
+for task in "${PANDA_TASKS[@]}"; do
+    TASK_DIR="$REPO_ROOT/examples/nvidia-panda/$task"
+    if is_complete "$TASK_DIR"; then
+        echo "[$TASK_NUM/14] $task: COMPLETE, skipping."
+    else
+        echo "[$TASK_NUM/14] Downloading $task..."
+        robust_git_download "GR00T-Dateset/$task" "$TASK_DIR"
+    fi
+    TASK_NUM=$((TASK_NUM + 1))
+done
+echo ""
+
+# =============================================
 # Final verification
 # =============================================
 echo "============================================"
 echo "Final status:"
 echo "============================================"
-for d in \
-    "examples/SimplerEnv/fractal20220817_data_lerobot" \
-    "examples/SimplerEnv/bridge_orig_lerobot" \
-    "examples/LIBERO/libero_10_no_noops_1.0.0_lerobot" \
-    "examples/LIBERO/libero_goal_no_noops_1.0.0_lerobot" \
-    "examples/LIBERO/libero_object_no_noops_1.0.0_lerobot" \
-    "examples/LIBERO/libero_spatial_no_noops_1.0.0_lerobot" \
-    "examples/DROID/droid_subset" \
-    "examples/robocasa/robocasa_mg_gr00t_300"; do
+VERIFY_DIRS=(
+    "examples/SimplerEnv/fractal20220817_data_lerobot"
+    "examples/SimplerEnv/bridge_orig_lerobot"
+    "examples/LIBERO/libero_10_no_noops_1.0.0_lerobot"
+    "examples/LIBERO/libero_goal_no_noops_1.0.0_lerobot"
+    "examples/LIBERO/libero_object_no_noops_1.0.0_lerobot"
+    "examples/LIBERO/libero_spatial_no_noops_1.0.0_lerobot"
+    "examples/DROID/droid_subset"
+    "examples/robocasa/robocasa_mg_gr00t_300"
+)
+for task in "${PANDA_TASKS[@]}"; do
+    VERIFY_DIRS+=("examples/nvidia-panda/$task")
+done
+for d in "${VERIFY_DIRS[@]}"; do
     name=$(basename "$d")
     sz=$(du -sh "$REPO_ROOT/$d" 2>/dev/null | cut -f1)
     if is_complete "$REPO_ROOT/$d"; then

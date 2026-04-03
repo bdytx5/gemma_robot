@@ -182,8 +182,8 @@ def main():
     step = args.step if args.step is not None else detect_step(args.checkpoint_path)
     video_root = os.path.join(args.video_root, f"step-{step:06d}")
     # run_name is human-readable; run_id is the stable identity W&B uses for resume
-    run_name = f"gr00t-google-eval-{Path(args.checkpoint_path).parent.name}"
-    run_id = args.wandb_run_id or f"eval-{Path(args.checkpoint_path).parent.name}"
+    run_name = "270m-balanced-eval"
+    run_id = args.wandb_run_id or "270m-balanced-eval"
 
     print(f"[eval] Checkpoint: {args.checkpoint_path}")
     print(f"[eval] Step: {step}  |  Envs: {len(args.envs)}  |  Episodes/env: {args.n_episodes}")

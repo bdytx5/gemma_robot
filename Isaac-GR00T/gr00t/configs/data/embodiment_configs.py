@@ -398,12 +398,11 @@ MODALITY_CONFIGS = {
                     format=ActionFormat.DEFAULT,
                     state_key="end_effector_position_absolute",
                 ),
-                # end_effector_rotation
+                # end_effector_rotation (axis_angle action vs quaternion state — can't compute relative)
                 ActionConfig(
-                    rep=ActionRepresentation.RELATIVE,
+                    rep=ActionRepresentation.ABSOLUTE,
                     type=ActionType.NON_EEF,
                     format=ActionFormat.DEFAULT,
-                    state_key="end_effector_rotation_absolute",
                 ),
                 # gripper_close
                 ActionConfig(

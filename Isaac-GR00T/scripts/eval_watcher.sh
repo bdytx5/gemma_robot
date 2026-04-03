@@ -26,7 +26,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 # Stable W&B run ID derived from the output dir — all checkpoints log to one run
-WANDB_RUN_ID="eval-$(basename "$OUTPUT_DIR")"
+WANDB_RUN_ID="270m-balanced-eval"
 
 PYTHON="$REPO_ROOT/.venv/bin/python"
 SIMPLER_VENV="$REPO_ROOT/gr00t/eval/sim/SimplerEnv/simpler_uv/.venv"
