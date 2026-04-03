@@ -343,6 +343,81 @@ MODALITY_CONFIGS = {
             ],
         ),
     },
+    "robocasa_panda_omron": {
+        "video": ModalityConfig(
+            delta_indices=[0],
+            modality_keys=[
+                "left_view",
+                "right_view",
+                "wrist_view",
+            ],
+        ),
+        "state": ModalityConfig(
+            delta_indices=[0],
+            modality_keys=[
+                "base_position",
+                "base_rotation",
+                "end_effector_position_absolute",
+                "end_effector_position_relative",
+                "end_effector_rotation_absolute",
+                "end_effector_rotation_relative",
+                "gripper_qpos",
+                "gripper_qvel",
+                "joint_position",
+                "joint_position_cos",
+                "joint_position_sin",
+                "joint_velocity",
+            ],
+        ),
+        "action": ModalityConfig(
+            delta_indices=list(range(0, 16)),
+            modality_keys=[
+                "base_motion",
+                "control_mode",
+                "end_effector_position",
+                "end_effector_rotation",
+                "gripper_close",
+            ],
+            action_configs=[
+                # base_motion
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                # control_mode
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                # end_effector_position
+                ActionConfig(
+                    rep=ActionRepresentation.RELATIVE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                    state_key="end_effector_position_absolute",
+                ),
+                # end_effector_rotation
+                ActionConfig(
+                    rep=ActionRepresentation.RELATIVE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                    state_key="end_effector_rotation_absolute",
+                ),
+                # gripper_close
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+            ],
+        ),
+        "language": ModalityConfig(
+            delta_indices=[0],
+            modality_keys=["annotation.human.action.task_description"],
+        ),
+    },
 }
 
 
