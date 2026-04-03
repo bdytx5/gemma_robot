@@ -302,10 +302,42 @@ def run_rollout_gymnasium_policy(
     i = 0
     episode_seed_counter = 0
 
+    MAX_CONSECUTIVE_FAILURES = 3  # give up on this env after this many crashes in a row
+    consecutive_failures = 0
+
     pbar = tqdm(total=n_episodes, desc="Episodes")
     while completed_episodes < n_episodes:
-        actions, _ = policy.get_action(observations)
-        next_obs, rewards, terminations, truncations, env_infos = env.step(actions)
+        try:
+            actions, _ = policy.get_action(observations)
+            next_obs, rewards, terminations, truncations, env_infos = env.step(actions)
+        except Exception as e:
+            # Env or policy crashed mid-episode — count current episodes as failures
+            consecutive_failures += 1
+            print(f"[rollout] env.step() crashed ({consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}): {e}")
+            for env_idx in range(n_envs):
+                if current_lengths[env_idx] > 0:
+                    # Episode was in progress — record as failure
+                    episode_lengths.append(current_lengths[env_idx])
+                    episode_successes.append(False)
+                    completed_episodes += 1
+                    pbar.update(1)
+                    current_successes[env_idx] = False
+                    current_rewards[env_idx] = 0
+                    current_lengths[env_idx] = 0
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                print(f"[rollout] {MAX_CONSECUTIVE_FAILURES} consecutive failures — returning partial results")
+                break
+            # Try to reset the env and keep going
+            try:
+                observations, _ = env.reset(seed=seed if seed is not None else None)
+                policy.reset()
+                print("[rollout] env reset OK — continuing")
+                continue
+            except Exception as reset_err:
+                print(f"[rollout] env.reset() also failed — returning partial results: {reset_err}")
+                break
+
+        consecutive_failures = 0  # reset on successful step
         # NOTE (FY): Currently we don't properly handle policy reset. For now, our policy are stateless,
         # but in the future if we need policy to be stateful, we need to detect env reset and call policy.reset()
         i += 1
@@ -345,8 +377,12 @@ def run_rollout_gymnasium_policy(
 
             # If episode ended, store results
             if terminations[env_idx] or truncations[env_idx]:
-                if "final_info" in env_infos:
-                    current_successes[env_idx] |= any(env_infos["final_info"][env_idx]["success"])
+                if "final_info" in env_infos and env_infos["final_info"][env_idx] is not None:
+                    fi_success = env_infos["final_info"][env_idx]["success"]
+                    fi_any = bool(np.any(fi_success))
+                    if fi_any:
+                        print(f"[rollout] Episode {completed_episodes}: SUCCESS detected via final_info (success={fi_success})")
+                    current_successes[env_idx] |= fi_any
                 if "task_progress" in env_infos:
                     episode_infos["task_progress"].append(env_infos["task_progress"][env_idx][-1])
                 if "q_score" in env_infos:
@@ -372,19 +408,23 @@ def run_rollout_gymnasium_policy(
         observations = next_obs
     pbar.close()
 
-    env.reset(seed=seed if seed is not None else None)
-    env.close()
-    print(f"Collecting {n_episodes} episodes took {time.time() - start_time} seconds")
+    try:
+        env.reset(seed=seed if seed is not None else None)
+        env.close()
+    except Exception:
+        pass  # env may already be dead from a crash
+    print(f"Collecting {completed_episodes}/{n_episodes} episodes took {time.time() - start_time} seconds")
 
-    assert len(episode_successes) >= n_episodes, (
-        f"Expected at least {n_episodes} episodes, got {len(episode_successes)}"
-    )
+    if len(episode_successes) < n_episodes:
+        print(f"[rollout] WARNING: only {len(episode_successes)}/{n_episodes} episodes completed")
 
     episode_infos = dict(episode_infos)  # Convert defaultdict to dict
     for key, value in episode_infos.items():
-        assert len(value) == len(episode_successes), (
-            f"Length of {key} is not equal to the number of episodes"
-        )
+        if len(value) != len(episode_successes):
+            # Trim to match — crash recovery can cause mismatches
+            min_len = min(len(value), len(episode_successes))
+            episode_infos[key] = value[:min_len]
+            episode_successes = episode_successes[:min_len]
 
     # process valid results
     if "valid" in episode_infos:
@@ -515,15 +555,18 @@ if __name__ == "__main__":
         seed=args.seed,
     )
     env_name, episode_successes, episode_infos = results
-    success_rate = float(np.mean(episode_successes))
+    success_rate = float(np.mean(episode_successes)) if episode_successes else 0.0
     print("results: ", results)
     print("success rate: ", success_rate)
+    if len(episode_successes) < args.n_episodes:
+        print(f"WARNING: only {len(episode_successes)}/{args.n_episodes} episodes completed")
 
     if args.output_json is not None:
         import json
         output = {
             "env_name": env_name,
             "n_episodes": len(episode_successes),
+            "n_episodes_requested": args.n_episodes,
             "success_rate": success_rate,
             "episode_successes": [bool(s) for s in episode_successes],
             "episode_infos": {k: [float(v) if hasattr(v, "item") else v for v in vals] for k, vals in episode_infos.items()},

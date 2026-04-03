@@ -129,6 +129,10 @@ def log_to_wandb(results: list[dict], video_root: str, step: int, project: str, 
         if r.get("episode_successes"):
             log[f"eval/{env_short}/n_success"] = sum(r["episode_successes"])
             log[f"eval/{env_short}/n_episodes"] = len(r["episode_successes"])
+        n_requested = r.get("n_episodes_requested") or r.get("n_episodes")
+        n_completed = len(r["episode_successes"]) if r.get("episode_successes") else 0
+        if n_requested and n_completed < n_requested:
+            log[f"eval/{env_short}/episodes_missing"] = n_requested - n_completed
         # Log task description so we can verify determinism across checkpoints
         if r.get("task_description"):
             log[f"eval/{env_short}/task_description"] = r["task_description"]
