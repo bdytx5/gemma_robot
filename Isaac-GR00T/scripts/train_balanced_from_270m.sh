@@ -21,6 +21,7 @@
 #
 # Flags:
 #   --resume          Resume from latest checkpoint in OUTPUT_DIR
+#   --resume_hf REPO  Resume from latest checkpoint on HuggingFace (downloads first)
 #   --test            Quick smoke test (fractal only, 50 steps, no W&B)
 
 set -e
@@ -36,12 +37,18 @@ MAX_STEPS=${MAX_STEPS:-20000}
 
 # Parse flags
 EXTRA_PY_FLAGS=""
-for arg in "$@"; do
-    case "$arg" in
-        --resume) EXTRA_PY_FLAGS="$EXTRA_PY_FLAGS --resume" ;;
-        --test)   EXTRA_PY_FLAGS="$EXTRA_PY_FLAGS --test" ;;
+RESUME_HF_REPO=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --resume)    EXTRA_PY_FLAGS="$EXTRA_PY_FLAGS --resume" ;;
+        --resume_hf) RESUME_HF_REPO="${2:-youngbrett48/gr00t-balanced-270m}"; shift ;;
+        --test)      EXTRA_PY_FLAGS="$EXTRA_PY_FLAGS --test" ;;
     esac
+    shift
 done
+if [ -n "$RESUME_HF_REPO" ]; then
+    EXTRA_PY_FLAGS="$EXTRA_PY_FLAGS --resume_hf $RESUME_HF_REPO"
+fi
 
 # ── Auto-detect latest 270m checkpoint ────────────────────────────────────────
 PREV_OUTPUT="./output/gr00t-eagle2_5-fractal"

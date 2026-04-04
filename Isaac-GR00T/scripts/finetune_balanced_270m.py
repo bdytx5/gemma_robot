@@ -128,6 +128,10 @@ def parse_args():
                         help="HF repo to load pretrained action head from (e.g. nvidia/GR00T-N1.6-fractal)")
     parser.add_argument("--resume", action="store_true",
                         help="Resume training from latest checkpoint in output_dir (keeps optimizer/scheduler state)")
+    parser.add_argument("--resume_hf", type=str, nargs="?",
+                        const="youngbrett48/gr00t-balanced-270m", default=None,
+                        help="Resume from HF checkpoint (default: youngbrett48/gr00t-balanced-270m). "
+                             "Downloads to output_dir then resumes.")
     parser.add_argument("--test", action="store_true",
                         help="Quick smoke test: use only fractal dataset, 50 steps, no W&B")
     return parser.parse_args()
@@ -179,8 +183,22 @@ def main():
         print("ERROR: No datasets are ready.")
         return
 
+    # --resume_hf: download latest checkpoint from HF, then resume from it
+    if args.resume_hf:
+        from huggingface_hub import snapshot_download
+        ckpt_dir = os.path.join(args.output_dir, args.experiment_name) if args.experiment_name else args.output_dir
+        os.makedirs(ckpt_dir, exist_ok=True)
+        print(f"[RESUME_HF] Downloading from {args.resume_hf}...")
+        # Download into a checkpoint dir named after the repo
+        local_ckpt = os.path.join(ckpt_dir, "checkpoint-hf")
+        snapshot_download(repo_id=args.resume_hf, local_dir=local_ckpt)
+        print(f"[RESUME_HF] Downloaded to {local_ckpt}")
+        args.checkpoint_path = local_ckpt
+        # Also set resume so trainer picks up optimizer/scheduler state
+        args.resume = True
+
     # --resume: find latest checkpoint in output_dir and use it as starting point
-    if args.resume:
+    if args.resume and not args.resume_hf:
         from transformers.trainer_utils import get_last_checkpoint
         ckpt_dir = os.path.join(args.output_dir, args.experiment_name) if args.experiment_name else args.output_dir
         last_ckpt = get_last_checkpoint(ckpt_dir) if os.path.isdir(ckpt_dir) else None
