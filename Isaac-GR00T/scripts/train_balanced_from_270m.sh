@@ -18,6 +18,10 @@
 #   OUTPUT_DIR        Where to save (default: ./output/balanced-from-270m)
 #   MAX_STEPS         Training steps (default: 20000)
 #   SKIP_EVAL         Set to 1 to skip post-training eval (default: 0)
+#
+# Flags:
+#   --resume          Resume from latest checkpoint in OUTPUT_DIR
+#   --test            Quick smoke test (fractal only, 50 steps, no W&B)
 
 set -e
 
@@ -29,6 +33,15 @@ cd "$REPO_ROOT"
 NUM_GPUS=${NUM_GPUS:-1}
 OUTPUT_DIR=${OUTPUT_DIR:-"./output/balanced-from-270m"}
 MAX_STEPS=${MAX_STEPS:-20000}
+
+# Parse flags
+EXTRA_PY_FLAGS=""
+for arg in "$@"; do
+    case "$arg" in
+        --resume) EXTRA_PY_FLAGS="$EXTRA_PY_FLAGS --resume" ;;
+        --test)   EXTRA_PY_FLAGS="$EXTRA_PY_FLAGS --test" ;;
+    esac
+done
 
 # ── Auto-detect latest 270m checkpoint ────────────────────────────────────────
 PREV_OUTPUT="./output/gr00t-eagle2_5-fractal"
@@ -156,7 +169,7 @@ fi
     --max_steps $MAX_STEPS \
     --wandb_project "finetune-gr00t-n1d6" \
     --experiment_name "balanced-270m-train" \
-    $EXTRA_ARGS
+    $EXTRA_ARGS $EXTRA_PY_FLAGS
 
 echo "[done] Training complete. Checkpoints in $OUTPUT_DIR"
 

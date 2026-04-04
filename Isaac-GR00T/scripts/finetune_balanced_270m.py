@@ -126,6 +126,10 @@ def parse_args():
     parser.add_argument("--no_tune_llm", action="store_true")
     parser.add_argument("--load_pretrained_action_head", type=str, default=None,
                         help="HF repo to load pretrained action head from (e.g. nvidia/GR00T-N1.6-fractal)")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume training from latest checkpoint in output_dir (keeps optimizer/scheduler state)")
+    parser.add_argument("--test", action="store_true",
+                        help="Quick smoke test: use only fractal dataset, 50 steps, no W&B")
     return parser.parse_args()
 
 
@@ -151,11 +155,41 @@ def main():
     # 270m base model
     BASE_MODEL = "youngbrett48/train_stage2_gemma3_270m.sh"
 
-    print("Checking dataset readiness...")
-    datasets = get_ready_datasets()
+    # --test mode: tiny run for smoke-testing drivers/setup
+    if args.test:
+        print("[TEST MODE] Using fractal-only, 50 steps, no W&B")
+        datasets = []
+        for ds in ALL_DATASETS:
+            ds_path = Path(ds["dataset_paths"][0])
+            if ds["embodiment_tag"] == "oxe_google" and (ds_path / "meta" / "info.json").exists():
+                datasets.append(dict(ds))
+                break
+        if not datasets:
+            print("ERROR: fractal dataset not found. Run scripts/download_test_dataset.sh first.")
+            return
+        args.max_steps = 50
+        args.save_steps = 25
+        args.save_total_limit = 2
+        args.wandb_project = ""  # disable
+    else:
+        print("Checking dataset readiness...")
+        datasets = get_ready_datasets()
+
     if not datasets:
         print("ERROR: No datasets are ready.")
         return
+
+    # --resume: find latest checkpoint in output_dir and use it as starting point
+    if args.resume:
+        from transformers.trainer_utils import get_last_checkpoint
+        ckpt_dir = os.path.join(args.output_dir, args.experiment_name) if args.experiment_name else args.output_dir
+        last_ckpt = get_last_checkpoint(ckpt_dir) if os.path.isdir(ckpt_dir) else None
+        if last_ckpt:
+            print(f"[RESUME] Found checkpoint: {last_ckpt}")
+            args.checkpoint_path = last_ckpt
+        else:
+            print(f"[RESUME] No checkpoint found in {ckpt_dir}, starting from --checkpoint_path")
+
     print(f"\nTraining with {len(datasets)} datasets from checkpoint: {args.checkpoint_path}")
 
     config = get_default_config().load_dict(
@@ -205,7 +239,7 @@ def main():
     config.training.save_steps = args.save_steps
     config.training.save_total_limit = args.save_total_limit
     config.training.num_gpus = 1
-    config.training.use_wandb = True
+    config.training.use_wandb = bool(args.wandb_project)
     config.training.max_steps = args.max_steps
     config.training.weight_decay = 1e-5
     config.training.warmup_ratio = 0.05

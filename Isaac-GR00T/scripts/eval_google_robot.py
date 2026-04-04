@@ -40,9 +40,13 @@ SERVER_SCRIPT = REPO_ROOT / "gr00t/eval/run_gr00t_server.py"
 ROLLOUT_SCRIPT = REPO_ROOT / "gr00t/eval/rollout_policy.py"
 
 
-def wait_for_server(port: int, timeout: int = 180) -> bool:
+def wait_for_server(port: int, timeout: int = 180, server_proc: subprocess.Popen = None) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
+        # If the server process already died (e.g. OOM), bail immediately
+        if server_proc and server_proc.poll() is not None:
+            print(f"[eval] Server process died (exit code {server_proc.returncode}) — not waiting.")
+            return False
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=2):
                 return True
@@ -65,7 +69,47 @@ def start_server(checkpoint_path: str, port: int, embodiment: str) -> subprocess
     if os.path.isdir(eagle_repo):
         env["PYTHONPATH"] = f"{eagle_repo}:{env.get('PYTHONPATH', '')}"
     print(f"[eval] Starting server: {' '.join(cmd)}")
-    return subprocess.Popen(cmd, env=env)
+    # Start in new process group so we can kill the entire tree on cleanup
+    return subprocess.Popen(cmd, env=env, start_new_session=True)
+
+
+def kill_server(server: subprocess.Popen):
+    """Kill the server and all its children (torch compile workers, etc.)."""
+    import signal as _signal
+    pgid = None
+    try:
+        pgid = os.getpgid(server.pid)
+    except OSError:
+        pass
+    # Try graceful SIGTERM on the whole process group first
+    if pgid:
+        try:
+            os.killpg(pgid, _signal.SIGTERM)
+        except OSError:
+            pass
+    else:
+        try:
+            server.terminate()
+        except OSError:
+            pass
+    try:
+        server.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        # Force kill the whole group
+        if pgid:
+            try:
+                os.killpg(pgid, _signal.SIGKILL)
+            except OSError:
+                pass
+        try:
+            server.kill()
+        except OSError:
+            pass
+        try:
+            server.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+    print("[eval] Server process cleaned up.")
 
 
 def run_env(env_name: str, port: int, n_episodes: int, video_dir: str, result_json: str, seed: int = 42) -> dict:
@@ -196,8 +240,8 @@ def main():
     server = start_server(args.checkpoint_path, args.port, "OXE_GOOGLE")
     try:
         print(f"[eval] Waiting for server on port {args.port}...")
-        if not wait_for_server(args.port, timeout=180):
-            raise RuntimeError("Policy server did not come up in time")
+        if not wait_for_server(args.port, timeout=180, server_proc=server):
+            raise RuntimeError("Policy server did not come up in time (crashed or timed out)")
         print("[eval] Server ready.")
 
         all_results = []
@@ -228,11 +272,7 @@ def main():
 
     finally:
         print("[eval] Shutting down server...")
-        server.send_signal(signal.SIGTERM)
-        try:
-            server.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            server.kill()
+        kill_server(server)
 
     rates = [r["success_rate"] for r in all_results if r.get("success_rate") is not None]
     if rates:
