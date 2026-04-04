@@ -1,12 +1,27 @@
 #!/bin/bash
+# Usage:
+#   bash scripts/download_all_datasets.sh          # download all 14 datasets
+#   bash scripts/download_all_datasets.sh --test   # download small fractal subset only
 set -e
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# --test: download minimal dataset for smoke-testing, then exit
+if [ "${1:-}" = "--test" ]; then
+    echo "============================================"
+    echo " Test mode: downloading small fractal subset"
+    echo "============================================"
+    bash "$REPO_ROOT/scripts/download_test_dataset.sh"
+    echo ""
+    echo "To run a quick training test:"
+    echo "  bash scripts/train_balanced_from_270m.sh --test"
+    exit 0
+fi
 
 echo "============================================"
 echo "Downloading all available GR00T datasets"
 echo "============================================"
 echo ""
-
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Check if dataset is fully downloaded:
 #   - has meta/info.json
