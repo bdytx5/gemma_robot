@@ -60,7 +60,6 @@ dev = [
     "pre-commit",
 ]
 gpu = [
-    "flash-attn==2.7.4.post1",
     "onnx>=1.20.0",
     "tensorrt>=10.14.1.48.post1",
 ]
@@ -69,8 +68,6 @@ gpu = [
 where = ["."]
 include = ["gr00t*"]
 
-[tool.uv.extra-build-dependencies]
-flash-attn = ["torch==2.7.1", "numpy==1.26.4", "triton==3.3.1"]
 
 [tool.uv.sources]
 torch = [

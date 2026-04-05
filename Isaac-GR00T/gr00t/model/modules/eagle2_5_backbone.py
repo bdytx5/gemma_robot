@@ -72,8 +72,8 @@ class Eagle2_5Backbone(nn.Module):
         extra_kwargs = dict(transformers_loading_kwargs)
         if load_bf16:
             extra_kwargs["torch_dtype"] = torch.bfloat16
-        if use_flash_attention:
-            extra_kwargs["attn_implementation"] = "flash_attention_2"
+        # Always use SDPA — flash_attn not compatible with Blackwell (sm_120)
+        extra_kwargs["attn_implementation"] = "sdpa"
 
         print(f"[Eagle2_5Backbone] Loading checkpoint from: {model_name}")
         self.model = Eagle2_5_VLForConditionalGeneration.from_pretrained(

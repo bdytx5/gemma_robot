@@ -136,6 +136,7 @@ class Eagle2_5_VLPreTrainedModel(PreTrainedModel):
     _no_split_modules = ["Qwen2DecoderLayer", "LlamaDecoderLayer", "Gemma3DecoderLayer", "Siglip2EncoderLayer", "SiglipEncoderLayer"]
     _skip_keys_device_placement = "past_key_values"
     _supports_flash_attn_2 = True
+    _supports_sdpa = True
     _supports_cache_class = True
     _supports_static_cache = True
     _supports_quantized_cache = True
@@ -184,7 +185,7 @@ class Eagle2_5_VLForConditionalGeneration(Eagle2_5_VLPreTrainedModel, Generation
             if config.vision_config.model_type == 'intern_vit_6b':
                 self.vision_model = InternVisionModel(config.vision_config)
             elif config.vision_config.model_type == 'siglip_vision_model':
-                config.vision_config._attn_implementation = 'flash_attention_2'
+                config.vision_config._attn_implementation = 'sdpa'
                 self.vision_model = SiglipVisionModel(config.vision_config)
             elif config.vision_config.model_type == 'radio':
                 self.vision_model = RADIOModel(config.vision_config)

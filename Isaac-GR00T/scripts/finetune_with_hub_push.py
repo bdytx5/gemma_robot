@@ -78,6 +78,8 @@ if __name__ == "__main__":
     config.load_config_path = None
 
     config.model.tune_llm = ft_config.tune_llm
+    config.model.tune_top_llm_layers = ft_config.tune_top_llm_layers
+    config.model.load_pretrained_action_head = ft_config.load_pretrained_action_head
     config.model.tune_visual = ft_config.tune_visual
     config.model.tune_projector = ft_config.tune_projector
     config.model.tune_diffusion_model = ft_config.tune_diffusion_model
@@ -85,6 +87,7 @@ if __name__ == "__main__":
     config.model.random_rotation_angle = ft_config.random_rotation_angle
     config.model.color_jitter_params = ft_config.color_jitter_params
     config.model.load_bf16 = False
+    config.model.use_flash_attention = False
     config.model.reproject_vision = False
     config.model.eagle_collator = True
     config.model.model_name = ft_config.base_model_path
@@ -95,6 +98,13 @@ if __name__ == "__main__":
         config.model.backbone_model_type = ft_config.backbone_model_type
     if ft_config.backbone_embedding_dim is not None:
         config.model.backbone_embedding_dim = ft_config.backbone_embedding_dim
+    if ft_config.backbone_proj_dim is not None:
+        config.model.backbone_proj_dim = ft_config.backbone_proj_dim
+    # When loading a pretrained action head (e.g. N1.6), match its state/action dims
+    if ft_config.load_pretrained_action_head:
+        config.model.max_state_dim = 128
+        config.model.max_action_dim = 128
+        config.model.action_horizon = 16
     if config.model.backbone_model_type == "eagle2_5":
         config.model.eagle_collator = False
 

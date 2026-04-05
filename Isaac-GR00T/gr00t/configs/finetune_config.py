@@ -38,6 +38,20 @@ class FinetuneConfig:
     tune_visual: bool = False
     """If True, fine-tune the visual encoder (e.g., ViT or CNN backbone)."""
 
+    tune_top_llm_layers: int = 4
+    """
+    Number of top LLM transformer layers to unfreeze when tune_llm=False.
+    Set to 0 to freeze the entire LLM. Default: 4.
+    Only applies to eagle2_5 backbone.
+    """
+
+    load_pretrained_action_head: str | None = None
+    """
+    HuggingFace repo ID to load a pretrained action head from before training.
+    E.g. "nvidia/GR00T-N1.6-fractal". Loads action_head.* weights with strict=False
+    so novel layers (backbone_proj, etc.) keep their random init.
+    """
+
     tune_projector: bool = True
     """If True, fine-tune the multimodal projector layers that map vision/language features to a shared space."""
 
@@ -127,7 +141,13 @@ class FinetuneConfig:
 
     backbone_embedding_dim: int | None = None
     """
-    Override the backbone_embedding_dim (LLM hidden size) in the model config.
-    Gemma3-270m = 1152. Must match the checkpoint's LLM hidden size.
+    Override the backbone_embedding_dim in the model config.
+    This is the dim the action head cross-attention expects (e.g. 2048 for N1.6 pretrained head).
     If None, uses the value saved in the base model config.
+    """
+
+    backbone_proj_dim: int | None = None
+    """
+    If set, add a linear projection from backbone_proj_dim → backbone_embedding_dim.
+    E.g. 1152 (Gemma3-1B output) projected to 2048 (N1.6 action head expects).
     """

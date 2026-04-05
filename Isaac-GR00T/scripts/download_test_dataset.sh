@@ -42,7 +42,7 @@ fi
 
 # Use huggingface-cli to download only chunk-000 (meta + 1 data chunk + 1 video chunk)
 echo "[download] Downloading metadata + chunk-000 only..."
-HF_HUB_ENABLE_HF_TRANSFER=1 huggingface-cli download --repo-type dataset "$HF_DATASET" \
+HF_HUB_ENABLE_HF_TRANSFER=0 huggingface-cli download --repo-type dataset "$HF_DATASET" \
     --include "meta/*" "data/chunk-000/*" "videos/chunk-000/*" "README.md" \
     --local-dir "$DATASET_PATH"
 
