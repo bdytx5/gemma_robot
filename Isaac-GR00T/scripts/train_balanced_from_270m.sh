@@ -43,6 +43,9 @@ while [ $# -gt 0 ]; do
         --resume)    EXTRA_PY_FLAGS="$EXTRA_PY_FLAGS --resume" ;;
         --resume_hf) RESUME_HF_REPO="${2:-youngbrett48/gr00t-balanced-270m}"; shift ;;
         --test)      EXTRA_PY_FLAGS="$EXTRA_PY_FLAGS --test" ;;
+        --batch_size) EXTRA_PY_FLAGS="$EXTRA_PY_FLAGS --global_batch_size $2"; shift ;;
+        --tune_top_llm_layers) EXTRA_PY_FLAGS="$EXTRA_PY_FLAGS --tune_top_llm_layers $2"; shift ;;
+        --no_tune_llm) EXTRA_PY_FLAGS="$EXTRA_PY_FLAGS --no_tune_llm" ;;
     esac
     shift
 done

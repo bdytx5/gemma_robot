@@ -12,8 +12,10 @@ Usage:
 """
 
 import argparse
+import json
 import os
 from pathlib import Path
+
 
 from gr00t.configs.base_config import get_default_config
 from gr00t.experiment import trainer as _trainer_mod
@@ -121,9 +123,12 @@ def parse_args():
     parser.add_argument("--dataloader_num_workers", type=int, default=4)
     parser.add_argument("--wandb_project", type=str, default="finetune-gr00t-n1d6")
     parser.add_argument("--experiment_name", type=str, default="balanced-270m-train")
-    parser.add_argument("--state_dropout_prob", type=float, default=0.5)
+    parser.add_argument("--state_dropout_prob", type=float, default=0.0)
     parser.add_argument("--tune_llm", action="store_true", default=True)
     parser.add_argument("--no_tune_llm", action="store_true")
+    parser.add_argument("--tune_top_llm_layers", type=int, default=0,
+                        help="Unfreeze only the last N LLM layers (0=use tune_llm flag instead)")
+    parser.add_argument("--tune_visual", action="store_true", default=False)
     parser.add_argument("--load_pretrained_action_head", type=str, default=None,
                         help="HF repo to load pretrained action head from (e.g. nvidia/GR00T-N1.6-fractal)")
     parser.add_argument("--resume", action="store_true",
@@ -139,6 +144,11 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    # Allow numpy objects in torch.load (needed for resuming checkpoints with numpy RNG state)
+    import numpy as np
+    import torch.serialization
+    torch.serialization.add_safe_globals([np.core.multiarray._reconstruct, np.ndarray, np.dtype])
 
     if "LOGURU_LEVEL" not in os.environ:
         os.environ["LOGURU_LEVEL"] = "INFO"
@@ -222,8 +232,12 @@ def main():
 
     # Model config — 270m
     tune_llm = args.tune_llm and not args.no_tune_llm
+    # --tune_top_llm_layers overrides --tune_llm (partial > full)
+    if args.tune_top_llm_layers > 0:
+        tune_llm = False
     config.model.tune_llm = tune_llm
-    config.model.tune_visual = False
+    config.model.tune_top_llm_layers = args.tune_top_llm_layers
+    config.model.tune_visual = args.tune_visual
     config.model.tune_projector = True
     config.model.tune_diffusion_model = True
     config.model.state_dropout_prob = args.state_dropout_prob
@@ -236,13 +250,23 @@ def main():
     config.model.backbone_model_type = "eagle2_5"
     # If loading a pretrained action head (e.g. N1.6), set backbone_embedding_dim to match
     # the pretrained head (2048) and add a projection from the real backbone dim (640).
+    # On resume, detect from checkpoint config so we don't need the flag again.
+    ckpt_config_path = os.path.join(args.checkpoint_path, "config.json")
+    if os.path.exists(ckpt_config_path):
+        with open(ckpt_config_path) as f:
+            ckpt_cfg = json.load(f)
+        if ckpt_cfg.get("backbone_embedding_dim", 640) == 2048:
+            print("[config] Detected backbone_embedding_dim=2048 from checkpoint")
+            args.load_pretrained_action_head = args.load_pretrained_action_head or "auto"
+
     if args.load_pretrained_action_head:
         config.model.backbone_embedding_dim = 2048
         config.model.backbone_proj_dim = 640
         config.model.max_state_dim = 128
         config.model.max_action_dim = 128
         config.model.action_horizon = 16
-        config.model.load_pretrained_action_head = args.load_pretrained_action_head
+        if args.load_pretrained_action_head != "auto":
+            config.model.load_pretrained_action_head = args.load_pretrained_action_head
     else:
         config.model.backbone_embedding_dim = 640
 

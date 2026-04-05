@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 from pathlib import Path
 
@@ -96,11 +97,28 @@ def parse_args():
     parser.add_argument("--state_dropout_prob", type=float, default=0.5)
     parser.add_argument("--tune_llm", action="store_true", default=True)
     parser.add_argument("--no_tune_llm", action="store_true")
+    parser.add_argument("--tune_top_llm_layers", type=int, default=0,
+                        help="Unfreeze only the last N LLM layers (0=use tune_llm flag instead)")
+    parser.add_argument("--tune_visual", action="store_true", default=False)
+    parser.add_argument("--load_pretrained_action_head", type=str, default=None,
+                        help="HF repo to load pretrained action head from (e.g. nvidia/GR00T-N1.6-fractal)")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume training from latest checkpoint in output_dir")
+    parser.add_argument("--resume_hf", type=str, nargs="?",
+                        const="youngbrett48/gr00t-balanced-1b", default=None,
+                        help="Resume from HF checkpoint (default: youngbrett48/gr00t-balanced-1b)")
+    parser.add_argument("--test", action="store_true",
+                        help="Quick smoke test: fractal only, 50 steps, no W&B")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+
+    # Allow numpy objects in torch.load (needed for resuming checkpoints with numpy RNG state)
+    import numpy as np
+    import torch.serialization
+    torch.serialization.add_safe_globals([np.core.multiarray._reconstruct, np.ndarray, np.dtype])
 
     if "LOGURU_LEVEL" not in os.environ:
         os.environ["LOGURU_LEVEL"] = "INFO"
@@ -121,11 +139,53 @@ def main():
     # The base model name (for architecture loading) is the original stage2 model
     BASE_MODEL = "youngbrett48/train_stage2_gemma3_1b.sh"
 
-    print("Checking dataset readiness...")
-    datasets = get_ready_datasets()
+    # --test mode: tiny run for smoke-testing
+    if args.test:
+        print("[TEST MODE] Using fractal-only, 50 steps, no W&B")
+        datasets = []
+        for ds in ALL_DATASETS:
+            ds_path = Path(ds["dataset_paths"][0])
+            if ds["embodiment_tag"] == "oxe_google" and (ds_path / "meta" / "info.json").exists():
+                datasets.append(dict(ds))
+                break
+        if not datasets:
+            print("ERROR: fractal dataset not found.")
+            return
+        args.max_steps = 50
+        args.save_steps = 25
+        args.save_total_limit = 2
+        args.wandb_project = ""
+    else:
+        print("Checking dataset readiness...")
+        datasets = get_ready_datasets()
+
     if not datasets:
         print("ERROR: No datasets are ready.")
         return
+
+    # --resume_hf: download latest checkpoint from HF, then resume from it
+    if args.resume_hf:
+        from huggingface_hub import snapshot_download
+        ckpt_dir = os.path.join(args.output_dir, args.experiment_name) if args.experiment_name else args.output_dir
+        os.makedirs(ckpt_dir, exist_ok=True)
+        print(f"[RESUME_HF] Downloading from {args.resume_hf}...")
+        local_ckpt = os.path.join(ckpt_dir, "checkpoint-hf")
+        snapshot_download(repo_id=args.resume_hf, local_dir=local_ckpt)
+        print(f"[RESUME_HF] Downloaded to {local_ckpt}")
+        args.checkpoint_path = local_ckpt
+        args.resume = True
+
+    # --resume: find latest checkpoint in output_dir
+    if args.resume and not args.resume_hf:
+        from transformers.trainer_utils import get_last_checkpoint
+        ckpt_dir = os.path.join(args.output_dir, args.experiment_name) if args.experiment_name else args.output_dir
+        last_ckpt = get_last_checkpoint(ckpt_dir) if os.path.isdir(ckpt_dir) else None
+        if last_ckpt:
+            print(f"[RESUME] Found checkpoint: {last_ckpt}")
+            args.checkpoint_path = last_ckpt
+        else:
+            print(f"[RESUME] No checkpoint found in {ckpt_dir}, starting from --checkpoint_path")
+
     print(f"\nTraining with {len(datasets)} datasets from checkpoint: {args.checkpoint_path}")
 
     config = get_default_config().load_dict(
@@ -138,10 +198,13 @@ def main():
     )
     config.load_config_path = None
 
-    # Model config — match the 270m fractal training setup
+    # Model config — 1b
     tune_llm = args.tune_llm and not args.no_tune_llm
+    if args.tune_top_llm_layers > 0:
+        tune_llm = False
     config.model.tune_llm = tune_llm
-    config.model.tune_visual = False
+    config.model.tune_top_llm_layers = args.tune_top_llm_layers
+    config.model.tune_visual = args.tune_visual
     config.model.tune_projector = True
     config.model.tune_diffusion_model = True
     config.model.state_dropout_prob = args.state_dropout_prob
@@ -152,9 +215,28 @@ def main():
     config.model.backbone_trainable_params_fp32 = True
     config.model.use_relative_action = True
     config.model.backbone_model_type = "eagle2_5"
-    config.model.backbone_embedding_dim = 1152
 
-    # Training config — resume from the 270m checkpoint
+    # Auto-detect backbone_embedding_dim from checkpoint config
+    ckpt_config_path = os.path.join(args.checkpoint_path, "config.json")
+    if os.path.exists(ckpt_config_path):
+        with open(ckpt_config_path) as f:
+            ckpt_cfg = json.load(f)
+        if ckpt_cfg.get("backbone_embedding_dim", 1152) == 2048:
+            print("[config] Detected backbone_embedding_dim=2048 from checkpoint")
+            args.load_pretrained_action_head = args.load_pretrained_action_head or "auto"
+
+    if args.load_pretrained_action_head:
+        config.model.backbone_embedding_dim = 2048
+        config.model.backbone_proj_dim = 1152
+        config.model.max_state_dim = 128
+        config.model.max_action_dim = 128
+        config.model.action_horizon = 16
+        if args.load_pretrained_action_head != "auto":
+            config.model.load_pretrained_action_head = args.load_pretrained_action_head
+    else:
+        config.model.backbone_embedding_dim = 1152
+
+    # Training config
     config.training.start_from_checkpoint = args.checkpoint_path
     config.training.optim = "adamw_torch"
     config.training.global_batch_size = args.global_batch_size
@@ -165,7 +247,7 @@ def main():
     config.training.save_steps = args.save_steps
     config.training.save_total_limit = args.save_total_limit
     config.training.num_gpus = 1
-    config.training.use_wandb = True
+    config.training.use_wandb = bool(args.wandb_project)
     config.training.max_steps = args.max_steps
     config.training.weight_decay = 1e-5
     config.training.warmup_ratio = 0.05

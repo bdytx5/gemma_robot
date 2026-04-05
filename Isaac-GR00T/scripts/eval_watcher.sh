@@ -38,6 +38,17 @@ fi
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # ---------------------------------------------------------------------------
+# Virtual display for SAPIEN/Vulkan rendering on headless servers
+# ---------------------------------------------------------------------------
+if [ -z "${DISPLAY:-}" ] && command -v Xvfb &>/dev/null; then
+    echo "[setup] Starting Xvfb virtual display..."
+    Xvfb :99 -screen 0 1024x768x24 &>/dev/null &
+    XVFB_PID=$!
+    export DISPLAY=:99
+    echo "[setup] DISPLAY=$DISPLAY (Xvfb PID $XVFB_PID)"
+fi
+
+# ---------------------------------------------------------------------------
 # Dependency check: ensure SimplerEnv venv exists and simpler_env is importable
 # ---------------------------------------------------------------------------
 setup_simpler_env() {
@@ -96,6 +107,18 @@ fi
 echo "[setup] SimplerEnv OK."
 # ---------------------------------------------------------------------------
 
+# Cleanup trap: kill any orphaned eval processes on exit
+cleanup_eval_processes() {
+    echo "[watcher] Cleaning up eval processes..."
+    pkill -f "run_gr00t_server.py.*--port $EVAL_PORT" 2>/dev/null || true
+    pkill -f "rollout_policy.py.*--policy_client_port $EVAL_PORT" 2>/dev/null || true
+    sleep 1
+    pkill -9 -f "run_gr00t_server.py.*--port $EVAL_PORT" 2>/dev/null || true
+    pkill -9 -f "rollout_policy.py.*--policy_client_port $EVAL_PORT" 2>/dev/null || true
+    echo "[watcher] Cleanup done."
+}
+trap cleanup_eval_processes EXIT
+
 echo "[watcher] Watching: $OUTPUT_DIR"
 echo "[watcher] Episodes/env: $N_EPISODES  |  Poll: ${POLL_INTERVAL}s  |  Port: $EVAL_PORT"
 echo "[watcher] W&B run ID: $WANDB_RUN_ID (all checkpoints → one run)"
@@ -140,15 +163,36 @@ while true; do
         echo "[watcher] New checkpoint: $CKPT  (step $STEP)"
         echo "[watcher] =========================================="
 
-        "$PYTHON" scripts/eval_google_robot.py \
-            --checkpoint_path "$CKPT" \
-            --step "$STEP" \
-            --n_episodes "$N_EPISODES" \
-            --port "$EVAL_PORT" \
-            --wandb_project "$WANDB_PROJECT" \
-            --wandb_run_id "$WANDB_RUN_ID" \
-            --results_file "$RESULTS_FILE" \
-            || echo "[watcher] Eval failed for $CKPT — continuing."
+        MAX_RETRIES=10
+        ATTEMPT=0
+        SUCCESS=0
+        while [ $ATTEMPT -lt $MAX_RETRIES ] && [ $SUCCESS -eq 0 ]; do
+            ATTEMPT=$((ATTEMPT + 1))
+            echo "[watcher] Attempt $ATTEMPT/$MAX_RETRIES for $CKPT"
+
+            "$PYTHON" scripts/eval_google_robot.py \
+                --checkpoint_path "$CKPT" \
+                --step "$STEP" \
+                --n_episodes "$N_EPISODES" \
+                --port "$EVAL_PORT" \
+                --wandb_project "$WANDB_PROJECT" \
+                --wandb_run_id "$WANDB_RUN_ID" \
+                --results_file "$RESULTS_FILE" \
+                --device cuda \
+                && SUCCESS=1
+
+            # Always clean up between attempts
+            cleanup_eval_processes
+
+            if [ $SUCCESS -eq 0 ]; then
+                echo "[watcher] Attempt $ATTEMPT failed for $CKPT — retrying in 30s..."
+                sleep 30
+            fi
+        done
+
+        if [ $SUCCESS -eq 0 ]; then
+            echo "[watcher] All $MAX_RETRIES attempts failed for $CKPT — skipping."
+        fi
 
         EVALUATED="$EVALUATED $CKPT"
         echo "[watcher] Done with $CKPT"

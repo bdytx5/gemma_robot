@@ -55,7 +55,7 @@ def wait_for_server(port: int, timeout: int = 180, server_proc: subprocess.Popen
     return False
 
 
-def start_server(checkpoint_path: str, port: int, embodiment: str) -> subprocess.Popen:
+def start_server(checkpoint_path: str, port: int, embodiment: str, device: str = "cuda") -> subprocess.Popen:
     cmd = [
         str(VENV_PYTHON),
         str(SERVER_SCRIPT),
@@ -63,6 +63,7 @@ def start_server(checkpoint_path: str, port: int, embodiment: str) -> subprocess
         "--embodiment_tag", embodiment,
         "--use_sim_policy_wrapper",
         "--port", str(port),
+        "--device", device,
     ]
     env = os.environ.copy()
     eagle_repo = str(REPO_ROOT.parent / "Eagle" / "Eagle2_5")
@@ -73,42 +74,69 @@ def start_server(checkpoint_path: str, port: int, embodiment: str) -> subprocess
     return subprocess.Popen(cmd, env=env, start_new_session=True)
 
 
+def kill_process_tree(pid: int):
+    """Kill a process and all its descendants."""
+    import signal as _signal
+    # Collect all descendant PIDs via /proc
+    def _get_children(parent_pid):
+        try:
+            out = subprocess.check_output(
+                ["pgrep", "-P", str(parent_pid)], text=True, stderr=subprocess.DEVNULL
+            )
+            return [int(p) for p in out.strip().split("\n") if p.strip()]
+        except (subprocess.CalledProcessError, ValueError):
+            return []
+
+    def _collect_tree(root):
+        pids = []
+        for child in _get_children(root):
+            pids.extend(_collect_tree(child))
+        pids.append(root)
+        return pids
+
+    all_pids = _collect_tree(pid)
+    # SIGTERM first
+    for p in all_pids:
+        try:
+            os.kill(p, _signal.SIGTERM)
+        except OSError:
+            pass
+    time.sleep(2)
+    # SIGKILL stragglers
+    for p in all_pids:
+        try:
+            os.kill(p, _signal.SIGKILL)
+        except OSError:
+            pass
+
+
 def kill_server(server: subprocess.Popen):
     """Kill the server and all its children (torch compile workers, etc.)."""
-    import signal as _signal
-    pgid = None
+    print(f"[eval] Killing server tree (root PID {server.pid})...")
+    kill_process_tree(server.pid)
     try:
-        pgid = os.getpgid(server.pid)
-    except OSError:
+        server.wait(timeout=5)
+    except Exception:
         pass
-    # Try graceful SIGTERM on the whole process group first
-    if pgid:
-        try:
-            os.killpg(pgid, _signal.SIGTERM)
-        except OSError:
-            pass
-    else:
-        try:
-            server.terminate()
-        except OSError:
-            pass
+    # Also kill any orphaned rollout_policy.py or run_gr00t_server.py on our port
     try:
-        server.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        # Force kill the whole group
-        if pgid:
-            try:
-                os.killpg(pgid, _signal.SIGKILL)
-            except OSError:
-                pass
-        try:
-            server.kill()
-        except OSError:
-            pass
-        try:
-            server.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+        out = subprocess.check_output(
+            ["pgrep", "-f", "run_gr00t_server.py"], text=True, stderr=subprocess.DEVNULL
+        )
+        for pid_str in out.strip().split("\n"):
+            if pid_str.strip():
+                kill_process_tree(int(pid_str.strip()))
+    except (subprocess.CalledProcessError, ValueError):
+        pass
+    try:
+        out = subprocess.check_output(
+            ["pgrep", "-f", "rollout_policy.py"], text=True, stderr=subprocess.DEVNULL
+        )
+        for pid_str in out.strip().split("\n"):
+            if pid_str.strip():
+                kill_process_tree(int(pid_str.strip()))
+    except (subprocess.CalledProcessError, ValueError):
+        pass
     print("[eval] Server process cleaned up.")
 
 
@@ -225,6 +253,8 @@ def main():
     parser.add_argument("--no_wandb", action="store_true", help="Skip W&B logging")
     parser.add_argument("--seed", type=int, default=42,
                         help="Base seed for deterministic eval (each env gets base_seed + env_index)")
+    parser.add_argument("--device", default="cuda",
+                        help="Device for model inference (cuda or cpu)")
     args = parser.parse_args()
 
     step = args.step if args.step is not None else detect_step(args.checkpoint_path)
@@ -237,7 +267,7 @@ def main():
     print(f"[eval] Step: {step}  |  Envs: {len(args.envs)}  |  Episodes/env: {args.n_episodes}")
     print(f"[eval] Videos → {video_root}")
 
-    server = start_server(args.checkpoint_path, args.port, "OXE_GOOGLE")
+    server = start_server(args.checkpoint_path, args.port, "OXE_GOOGLE", device=args.device)
     try:
         print(f"[eval] Waiting for server on port {args.port}...")
         if not wait_for_server(args.port, timeout=180, server_proc=server):
@@ -261,14 +291,20 @@ def main():
             status = f"{sr:.1%}" if sr is not None else f"ERROR: {result.get('error', '?')}"
             print(f"[result] {env_short}: {status}")
 
-        # Append to JSONL
+        # Only log if we got at least one real result
+        good_results = [r for r in all_results if r.get("success_rate") is not None]
+        if not good_results:
+            print("[eval] No successful env results — skipping JSONL and W&B logging.")
+            sys.exit(1)
+
+        # Append to JSONL (only results with actual data)
         with open(args.results_file, "a") as f:
-            for r in all_results:
+            for r in good_results:
                 f.write(json.dumps(r) + "\n")
-        print(f"[eval] Results appended to {args.results_file}")
+        print(f"[eval] {len(good_results)} results appended to {args.results_file}")
 
         if not args.no_wandb:
-            log_to_wandb(all_results, video_root, step, args.wandb_project, run_name, run_id)
+            log_to_wandb(good_results, video_root, step, args.wandb_project, run_name, run_id)
 
     finally:
         print("[eval] Shutting down server...")

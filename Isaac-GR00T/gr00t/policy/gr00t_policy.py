@@ -80,7 +80,7 @@ class Gr00tPolicy(BasePolicy):
 
         # Load the pretrained model and move to target device with bfloat16 precision
         model = AutoModel.from_pretrained(model_dir)
-        model.eval()  # Set model to evaluation mode
+        model.eval()
         model.to(device=device, dtype=torch.bfloat16)
         self.model = model
 

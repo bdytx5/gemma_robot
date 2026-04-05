@@ -159,9 +159,13 @@ def run(config: Config):
             "git_commit_hash": os.environ.get("GROOT_COMMIT_HASH", "unknown"),
         }
 
+        # Use a stable run ID so resumed training continues the same W&B run
+        wandb_run_id = os.environ.get("WANDB_RUN_ID") or experiment_name
         wandb.init(
             project=config.training.wandb_project,
             name=experiment_name,
+            id=wandb_run_id,
+            resume="allow",
             config=config_dict,
             tags=[config.data.mode],
         )
