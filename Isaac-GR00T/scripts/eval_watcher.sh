@@ -26,7 +26,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 # Stable W&B run ID derived from the output dir — all checkpoints log to one run
-WANDB_RUN_ID="270m-balanced-eval"
+WANDB_RUN_ID=${WANDB_RUN_ID:-"270m-balanced-eval"}
 
 PYTHON="$REPO_ROOT/.venv/bin/python"
 SIMPLER_VENV="$REPO_ROOT/gr00t/eval/sim/SimplerEnv/simpler_uv/.venv"
@@ -145,6 +145,12 @@ while true; do
         # Make sure the checkpoint has a config.json (i.e. fully written)
         if [ ! -f "$CKPT/config.json" ]; then
             echo "[watcher] $CKPT incomplete (no config.json), skipping for now"
+            continue
+        fi
+        # Only eval every EVAL_EVERY steps (default: 2000)
+        CKPT_STEP=$(basename "$CKPT" | sed 's/checkpoint-//')
+        if [ $(( CKPT_STEP % ${EVAL_EVERY:-2000} )) -ne 0 ]; then
+            EVALUATED="$EVALUATED $CKPT"
             continue
         fi
         NEW="$NEW $CKPT"

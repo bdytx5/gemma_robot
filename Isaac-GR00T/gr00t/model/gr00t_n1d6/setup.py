@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from pathlib import Path
 
 from gr00t.configs.base_config import Config
@@ -102,6 +103,15 @@ class Gr00tN1d6Pipeline(ModelPipeline):
             model = self.model_class(
                 self.config.model, transformers_loading_kwargs=self.transformers_loading_kwargs
             )
+
+            # If start_from_checkpoint points to a local checkpoint dir (not the base HF model),
+            # load the finetuned weights on top of the freshly instantiated model.
+            ckpt_path = self.config.training.start_from_checkpoint
+            if ckpt_path and os.path.isdir(ckpt_path) and os.path.exists(os.path.join(ckpt_path, "config.json")):
+                from transformers.modeling_utils import load_sharded_checkpoint
+                logging.info(f"[Eagle2.5] Loading finetuned weights from {ckpt_path}")
+                load_sharded_checkpoint(model, ckpt_path, strict=False)
+                logging.info("[Eagle2.5] Finetuned weights loaded.")
 
         # Optionally load a pretrained action head (e.g. from nvidia/GR00T-N1.6-fractal)
         pretrained_head = getattr(self.config.model, "load_pretrained_action_head", None)

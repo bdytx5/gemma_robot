@@ -25,12 +25,12 @@ import tempfile
 from pathlib import Path
 
 GOOGLE_ENVS = [
-    "simpler_env_google/google_robot_pick_coke_can",
-    "simpler_env_google/google_robot_pick_object",
-    "simpler_env_google/google_robot_move_near",
     "simpler_env_google/google_robot_open_drawer",
     "simpler_env_google/google_robot_close_drawer",
     "simpler_env_google/google_robot_place_in_closed_drawer",
+    "simpler_env_google/google_robot_pick_coke_can",
+    "simpler_env_google/google_robot_pick_object",
+    "simpler_env_google/google_robot_move_near",
 ]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -157,10 +157,12 @@ def run_env(env_name: str, port: int, n_episodes: int, video_dir: str, result_js
         "--seed", str(seed),
     ]
     env = os.environ.copy()
+    env["VK_ICD_FILENAMES"] = "/usr/share/vulkan/icd.d/nvidia_icd.json"
     Path(video_dir).mkdir(parents=True, exist_ok=True)
     print(f"[eval] Running {env_name} ({n_episodes} episodes)...")
     t0 = time.time()
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, env=env)
+    timeout = max(600, n_episodes * 120)  # 2 min per episode minimum
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
     elapsed = time.time() - t0
     if proc.stdout:
         print(proc.stdout[-2000:])

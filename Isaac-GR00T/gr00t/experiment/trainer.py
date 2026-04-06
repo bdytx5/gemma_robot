@@ -266,6 +266,20 @@ class Gr00tTrainer(Trainer):
 
         return super().train(resume_from_checkpoint=resume_from_checkpoint, **kwargs)
 
+    def _load_optimizer_and_scheduler(self, checkpoint):
+        """Load optimizer/scheduler, but skip gracefully if param groups don't match
+        (e.g. when freeze config changed between runs)."""
+        try:
+            super()._load_optimizer_and_scheduler(checkpoint)
+        except ValueError as e:
+            if "parameter group" in str(e):
+                logging.warning(
+                    f"Optimizer state mismatch (freeze config likely changed) — "
+                    f"starting fresh optimizer. Original error: {e}"
+                )
+            else:
+                raise
+
     # ------------------------------------------------------------------
     # Loss / accuracy computation override
     # ------------------------------------------------------------------

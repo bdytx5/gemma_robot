@@ -131,14 +131,16 @@ def parse_args():
     parser.add_argument("--tune_visual", action="store_true", default=False)
     parser.add_argument("--load_pretrained_action_head", type=str, default=None,
                         help="HF repo to load pretrained action head from (e.g. nvidia/GR00T-N1.6-fractal)")
-    parser.add_argument("--resume", action="store_true",
-                        help="Resume training from latest checkpoint in output_dir (keeps optimizer/scheduler state)")
+    parser.add_argument("--resume", type=str, nargs="?", const="auto", default=None,
+                        help="Resume training. Pass a checkpoint path, or 'auto' to find latest in output_dir.")
     parser.add_argument("--resume_hf", type=str, nargs="?",
                         const="youngbrett48/gr00t-balanced-270m", default=None,
                         help="Resume from HF checkpoint (default: youngbrett48/gr00t-balanced-270m). "
                              "Downloads to output_dir then resumes.")
     parser.add_argument("--test", action="store_true",
                         help="Quick smoke test: use only fractal dataset, 50 steps, no W&B")
+    parser.add_argument("--fractal_only", action="store_true",
+                        help="Train on fractal dataset only (full run, not a smoke test)")
     return parser.parse_args()
 
 
@@ -185,6 +187,17 @@ def main():
         args.save_steps = 25
         args.save_total_limit = 2
         args.wandb_project = ""  # disable
+    elif args.fractal_only:
+        print("[FRACTAL ONLY] Training on fractal dataset only")
+        datasets = []
+        for ds in ALL_DATASETS:
+            ds_path = Path(ds["dataset_paths"][0])
+            if ds["embodiment_tag"] == "oxe_google" and (ds_path / "meta" / "info.json").exists():
+                datasets.append(dict(ds))
+                break
+        if not datasets:
+            print("ERROR: fractal dataset not found. Run scripts/download_test_dataset.sh first.")
+            return
     else:
         print("Checking dataset readiness...")
         datasets = get_ready_datasets()
@@ -199,24 +212,25 @@ def main():
         ckpt_dir = os.path.join(args.output_dir, args.experiment_name) if args.experiment_name else args.output_dir
         os.makedirs(ckpt_dir, exist_ok=True)
         print(f"[RESUME_HF] Downloading from {args.resume_hf}...")
-        # Download into a checkpoint dir named after the repo
         local_ckpt = os.path.join(ckpt_dir, "checkpoint-hf")
         snapshot_download(repo_id=args.resume_hf, local_dir=local_ckpt)
         print(f"[RESUME_HF] Downloaded to {local_ckpt}")
-        args.checkpoint_path = local_ckpt
-        # Also set resume so trainer picks up optimizer/scheduler state
-        args.resume = True
+        args.resume = local_ckpt
 
-    # --resume: find latest checkpoint in output_dir and use it as starting point
-    if args.resume and not args.resume_hf:
-        from transformers.trainer_utils import get_last_checkpoint
-        ckpt_dir = os.path.join(args.output_dir, args.experiment_name) if args.experiment_name else args.output_dir
-        last_ckpt = get_last_checkpoint(ckpt_dir) if os.path.isdir(ckpt_dir) else None
-        if last_ckpt:
-            print(f"[RESUME] Found checkpoint: {last_ckpt}")
-            args.checkpoint_path = last_ckpt
-        else:
-            print(f"[RESUME] No checkpoint found in {ckpt_dir}, starting from --checkpoint_path")
+    # --resume: resolve to a checkpoint path
+    if args.resume:
+        if args.resume == "auto":
+            from transformers.trainer_utils import get_last_checkpoint
+            ckpt_dir = os.path.join(args.output_dir, args.experiment_name) if args.experiment_name else args.output_dir
+            last_ckpt = get_last_checkpoint(ckpt_dir) if os.path.isdir(ckpt_dir) else None
+            if last_ckpt:
+                args.resume = last_ckpt
+            else:
+                print(f"[RESUME] No checkpoint found in {ckpt_dir}, falling back to --checkpoint_path")
+                args.resume = args.checkpoint_path
+        # args.resume is now always a path
+        args.checkpoint_path = args.resume
+        print(f"[RESUME] Resuming from: {args.resume}")
 
     print(f"\nTraining with {len(datasets)} datasets from checkpoint: {args.checkpoint_path}")
 
