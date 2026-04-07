@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # eval_compare.sh — Head-to-head: our model vs stock N1.6
 # Runs all 6 envs in parallel against each model server.
+# Stock model uses ORIGINAL unmodified NVIDIA code (flash_attn, default settings).
 #
 # Usage:
 #   bash scripts/eval_compare.sh
 #   bash scripts/eval_compare.sh --ours /path/to/checkpoint
-#   N_EPISODES=10 bash scripts/eval_compare.sh
+#   N_EPISODES=200 N_ENVS=20 bash scripts/eval_compare.sh
 
 set -e
 
@@ -14,6 +15,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 N_EPISODES=${N_EPISODES:-10}
+N_ENVS=${N_ENVS:-1}
+MAX_EPISODE_STEPS=${MAX_EPISODE_STEPS:-504}  # NVIDIA default
 PORT=${PORT:-5556}
 RESULTS_FILE=${RESULTS_FILE:-"eval_results_compare.jsonl"}
 PYTHON=${PYTHON:-"$REPO_ROOT/.venv/bin/python"}
@@ -23,8 +26,13 @@ SERVER_SCRIPT="$REPO_ROOT/gr00t/eval/run_gr00t_server.py"
 EAGLE_REPO="$(cd "$REPO_ROOT/../Eagle/Eagle2_5" 2>/dev/null && pwd || true)"
 export PYTHONPATH="$EAGLE_REPO:${PYTHONPATH:-}"
 BASE_SEED=${BASE_SEED:-42}
+WANDB_PROJECT=${WANDB_PROJECT:-"finetune-gr00t-n1d6"}
 
-ENVS=(
+# Stock model uses unmodified NVIDIA code from a clean clone
+STOCK_REPO="/home/ubuntu/gemma_robot/gr00t_stock"
+STOCK_SERVER_SCRIPT="$STOCK_REPO/gr00t/eval/run_gr00t_server.py"
+
+ALL_ENVS=(
     "simpler_env_google/google_robot_open_drawer"
     "simpler_env_google/google_robot_close_drawer"
     "simpler_env_google/google_robot_place_in_closed_drawer"
@@ -32,6 +40,11 @@ ENVS=(
     "simpler_env_google/google_robot_pick_object"
     "simpler_env_google/google_robot_move_near"
 )
+if [ -n "${N_TASKS:-}" ] && [ "$N_TASKS" -lt "${#ALL_ENVS[@]}" ]; then
+    ENVS=("${ALL_ENVS[@]:0:$N_TASKS}")
+else
+    ENVS=("${ALL_ENVS[@]}")
+fi
 
 ROLLOUT_PYTHON="$SIMPLER_PYTHON"
 if [ ! -f "$ROLLOUT_PYTHON" ]; then
@@ -63,10 +76,18 @@ rm -rf "$VIDEO_ROOT"
 rm -f "$RESULTS_FILE"
 
 start_server() {
-    local model_path=$1 port=$2
-    $PYTHON $SERVER_SCRIPT \
-        --model_path "$model_path" --embodiment_tag OXE_GOOGLE \
-        --use_sim_policy_wrapper --port "$port" --device cuda > /tmp/gr00t_server_${port}.log 2>&1 &
+    local model_path=$1 port=$2 use_stock=${3:-0}
+    if [ "$use_stock" = "1" ]; then
+        echo "[server] Using STOCK gr00t code from $STOCK_REPO"
+        PYTHONPATH="$STOCK_REPO:$EAGLE_REPO:${PYTHONPATH:-}" $PYTHON \
+            "$STOCK_REPO/run_stock.py" "$STOCK_SERVER_SCRIPT" \
+            --model_path "$model_path" --embodiment_tag OXE_GOOGLE \
+            --use_sim_policy_wrapper --port "$port" --device cuda > /tmp/gr00t_server_${port}.log 2>&1 &
+    else
+        $PYTHON $SERVER_SCRIPT \
+            --model_path "$model_path" --embodiment_tag OXE_GOOGLE \
+            --use_sim_policy_wrapper --port "$port" --device cuda > /tmp/gr00t_server_${port}.log 2>&1 &
+    fi
     SERVER_PID=$!
     echo "[server] Started PID $SERVER_PID on port $port, waiting..."
     for i in $(seq 1 180); do
@@ -83,6 +104,9 @@ start_server() {
 kill_server() {
     local pid=$1
     kill $pid 2>/dev/null; sleep 1; kill -9 $pid 2>/dev/null || true
+    pkill -9 -f run_gr00t_server 2>/dev/null || true
+    pkill -9 -f rollout_policy 2>/dev/null || true
+    sleep 2
 }
 
 run_all_envs() {
@@ -96,11 +120,11 @@ run_all_envs() {
         local out_dir="$video_dir/$env_short"
         mkdir -p "$out_dir"
 
-        echo "  [$model_name] Starting $env_short (seed=$seed)..."
+        echo "  [$model_name] Starting $env_short (seed=$seed, n_episodes=$N_EPISODES, n_envs=$N_ENVS, max_steps=$MAX_EPISODE_STEPS)..."
         env VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json \
             "$ROLLOUT_PYTHON" "$ROLLOUT_SCRIPT" \
-            --env_name "$env" --n_episodes "$N_EPISODES" --n_envs 1 \
-            --n_action_steps 8 --max_episode_steps 300 \
+            --env_name "$env" --n_episodes "$N_EPISODES" --n_envs "$N_ENVS" \
+            --n_action_steps 8 --max_episode_steps "$MAX_EPISODE_STEPS" \
             --policy_client_host 127.0.0.1 --policy_client_port "$port" \
             --output_json "$out_dir/result.json" --video_dir "$out_dir" --seed "$seed" \
             > "$out_dir/stdout.log" 2>&1 &
@@ -135,17 +159,18 @@ print(json.dumps(r))
 
 echo "============================================"
 echo " Head-to-head: $N_EPISODES episodes/task"
+echo " n_envs=$N_ENVS  max_episode_steps=$MAX_EPISODE_STEPS"
 echo " All 6 envs in parallel per model"
 echo "============================================"
-echo "[stock] $STOCK"
+echo "[stock] $STOCK (ORIGINAL NVIDIA code)"
 echo "[ours]  $OURS_CKPT (step $STEP)"
 echo ""
 
 # ── Stock ────────────────────────────────────────────────────────────────────
 echo "==============================="
-echo " STOCK N1.6"
+echo " STOCK N1.6 (using ORIGINAL NVIDIA code)"
 echo "==============================="
-start_server "$STOCK" $PORT
+start_server "$STOCK" $PORT 1
 run_all_envs "stock" $PORT 0 "$VIDEO_ROOT/stock"
 kill_server $SERVER_PID
 echo ""
@@ -189,4 +214,145 @@ sm, om = s_sum/n, o_sum/n
 d = om - sm
 sign = '+' if d > 0 else ''
 print(f'{\"MEAN\":<40} {sm:>7.0%} {om:>7.0%} {sign}{d:>7.0%}')
+"
+
+# ── Upload to W&B as comparison table with videos ────────────────────────────
+echo ""
+echo "[wandb] Uploading comparison table..."
+$PYTHON -c "
+import json, wandb, os, glob
+
+results = []
+with open('$RESULTS_FILE') as f:
+    for line in f:
+        results.append(json.loads(line))
+
+stock = {r['env_name'].split('/')[-1]: r for r in results if r.get('model') == 'stock'}
+ours = {r['env_name'].split('/')[-1]: r for r in results if r.get('model') == 'ours'}
+all_envs = sorted(set(list(stock.keys()) + list(ours.keys())))
+
+# Create W&B run
+run = wandb.init(
+    project='$WANDB_PROJECT',
+    name='compare-stock-vs-ours-step$STEP',
+    id='compare-stock-vs-ours-step$STEP',
+    resume='allow',
+)
+
+# ── Summary metrics ──
+s_rates, o_rates = [], []
+for env in all_envs:
+    s = stock.get(env, {}).get('success_rate', 0)
+    o = ours.get(env, {}).get('success_rate', 0)
+    run.summary[f'stock/{env}'] = s
+    run.summary[f'ours/{env}'] = o
+    run.summary[f'diff/{env}'] = o - s
+    s_rates.append(s)
+    o_rates.append(o)
+
+run.summary['stock/mean'] = sum(s_rates) / len(s_rates)
+run.summary['ours/mean'] = sum(o_rates) / len(o_rates)
+run.summary['diff/mean'] = run.summary['ours/mean'] - run.summary['stock/mean']
+
+# ── Comparison table: one row per env ──
+columns = ['task', 'stock_success_rate', 'ours_success_rate', 'diff', 'stock_episodes', 'ours_episodes']
+table = wandb.Table(columns=columns)
+for env in all_envs:
+    s = stock.get(env, {})
+    o = ours.get(env, {})
+    sr_s = s.get('success_rate', 0)
+    sr_o = o.get('success_rate', 0)
+    ep_s = len(s.get('episode_successes', [])) if s else 0
+    ep_o = len(o.get('episode_successes', [])) if o else 0
+    table.add_data(env, sr_s, sr_o, sr_o - sr_s, ep_s, ep_o)
+# Mean row
+table.add_data('MEAN', sum(s_rates)/len(s_rates), sum(o_rates)/len(o_rates),
+               sum(o_rates)/len(o_rates) - sum(s_rates)/len(s_rates),
+               sum(len(stock.get(e, {}).get('episode_successes', [])) for e in all_envs),
+               sum(len(ours.get(e, {}).get('episode_successes', [])) for e in all_envs))
+run.log({'comparison_table': table})
+
+# ── Per-episode table with videos (side-by-side) ──
+ep_columns = ['task', 'episode', 'stock_success', 'stock_video', 'ours_success', 'ours_video']
+ep_table = wandb.Table(columns=ep_columns)
+video_root = '$VIDEO_ROOT'
+for env in all_envs:
+    s_r = stock.get(env, {})
+    o_r = ours.get(env, {})
+    s_vid_dir = os.path.join(video_root, 'stock', env)
+    o_vid_dir = os.path.join(video_root, 'ours', env)
+    s_vids = sorted(glob.glob(os.path.join(s_vid_dir, '*.mp4'))) if os.path.isdir(s_vid_dir) else []
+    o_vids = sorted(glob.glob(os.path.join(o_vid_dir, '*.mp4'))) if os.path.isdir(o_vid_dir) else []
+    n_eps = max(len(s_r.get('episode_successes', [])), len(o_r.get('episode_successes', [])))
+    s_succs = s_r.get('episode_successes', [])
+    o_succs = o_r.get('episode_successes', [])
+    for i in range(n_eps):
+        s_succ = int(s_succs[i]) if i < len(s_succs) else None
+        o_succ = int(o_succs[i]) if i < len(o_succs) else None
+        s_vid = wandb.Video(s_vids[i], format='mp4') if i < len(s_vids) else None
+        o_vid = wandb.Video(o_vids[i], format='mp4') if i < len(o_vids) else None
+        ep_table.add_data(env, i, s_succ, s_vid, o_succ, o_vid)
+run.log({'episode_table': ep_table})
+
+run.finish()
+print('[wandb] Done.')
+"
+
+# ── Upload to Weave for comparison ─────────────────────────────────────────
+echo ""
+echo "[weave] Logging results to Weave..."
+$PYTHON -c "
+import json, os, glob, weave
+
+weave.init('byyoung3/$WANDB_PROJECT')
+
+results = []
+with open('$RESULTS_FILE') as f:
+    for line in f:
+        results.append(json.loads(line))
+
+stock = {r['env_name'].split('/')[-1]: r for r in results if r.get('model') == 'stock'}
+ours = {r['env_name'].split('/')[-1]: r for r in results if r.get('model') == 'ours'}
+all_envs = sorted(set(list(stock.keys()) + list(ours.keys())))
+video_root = '$VIDEO_ROOT'
+
+# Publish dataset (one row per task+episode)
+rows = []
+for env in all_envs:
+    s_r = stock.get(env, {})
+    o_r = ours.get(env, {})
+    n_eps = max(len(s_r.get('episode_successes', [])), len(o_r.get('episode_successes', [])))
+    for i in range(n_eps):
+        rows.append({'task': env, 'episode': i})
+dataset = weave.Dataset(name='compare-stock-vs-ours-step$STEP', rows=rows)
+weave.publish(dataset)
+
+# Log evaluations for each model
+for model_name, model_results in [('stock-n1.6', stock), ('ours-step$STEP', ours)]:
+    tag = 'stock' if 'stock' in model_name else 'ours'
+    ev = weave.EvaluationLogger(
+        name='compare-stock-vs-ours-step$STEP',
+        model=model_name,
+        dataset='compare-stock-vs-ours-step$STEP',
+        scorers=['success'],
+    )
+    for env in all_envs:
+        r = model_results.get(env, {})
+        vid_dir = os.path.join(video_root, tag, env)
+        vids = sorted(glob.glob(os.path.join(vid_dir, '*.mp4'))) if os.path.isdir(vid_dir) else []
+        for i, succ in enumerate(r.get('episode_successes', [])):
+            pred = ev.log_prediction(
+                inputs={'task': env, 'episode': i},
+                output={'success': bool(succ), 'video': vids[i] if i < len(vids) else None},
+            )
+            pred.log_score(scorer='success', score=bool(succ))
+            pred.finish()
+
+    # Summary
+    rates = [model_results.get(e, {}).get('success_rate', 0) for e in all_envs]
+    summary = {e: model_results.get(e, {}).get('success_rate', 0) for e in all_envs}
+    summary['mean_success_rate'] = sum(rates) / len(rates) if rates else 0
+    ev.log_summary(summary)
+
+print('[weave] Done. Compare models in Weave Evals tab.')
 "

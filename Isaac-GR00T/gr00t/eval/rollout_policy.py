@@ -275,8 +275,10 @@ def run_rollout_gymnasium_policy(
         for idx in range(n_envs)
     ]
 
+    # Disable autoreset when n_envs=1 so we can seed each episode deterministically.
+    # For n_envs>1 we keep autoreset — individual sub-env reset isn't cleanly supported.
     if n_envs == 1:
-        env = gym.vector.SyncVectorEnv(env_fns)
+        env = gym.vector.SyncVectorEnv(env_fns, autoreset_mode="Disabled")
     else:
         env = gym.vector.AsyncVectorEnv(
             env_fns,
@@ -292,6 +294,8 @@ def run_rollout_gymnasium_policy(
     current_successes = [False] * n_envs
     episode_successes = []
     episode_infos = defaultdict(list)
+    # Per-env episode counter for deterministic seeding
+    env_episode_counter = [0] * n_envs
 
     # Initial reset with deterministic seed
     if seed is not None:
@@ -405,7 +409,19 @@ def run_rollout_gymnasium_policy(
                     pbar.update(1)
                 current_rewards[env_idx] = 0
                 current_lengths[env_idx] = 0
-        observations = next_obs
+
+                # For n_envs=1 (autoreset disabled): manually reset with per-episode seed
+                if n_envs == 1:
+                    env_episode_counter[env_idx] += 1
+                    if seed is not None:
+                        ep_seed = seed + env_episode_counter[env_idx] * 1000
+                    else:
+                        ep_seed = None
+                    observations, _ = env.reset(seed=ep_seed)
+
+        # For n_envs>1 (autoreset enabled): observations come from next_obs
+        if n_envs > 1 or not any(terminations[eidx] or truncations[eidx] for eidx in range(n_envs)):
+            observations = next_obs
     pbar.close()
 
     try:
