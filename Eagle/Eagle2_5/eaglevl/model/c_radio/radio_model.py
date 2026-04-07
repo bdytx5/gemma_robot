@@ -54,7 +54,86 @@ import torch.nn.functional as F
 from einops import rearrange
 
 
-def _sdpa_attn(self, x: torch.Tensor) -> torch.Tensor:
+try:  # v1
+    from flash_attn.flash_attn_interface import \
+        flash_attn_unpadded_qkvpacked_func
+except Exception:
+    try:  # v2
+        from flash_attn.flash_attn_interface import flash_attn_varlen_qkvpacked_func as flash_attn_unpadded_qkvpacked_func
+    except Exception:
+        flash_attn_unpadded_qkvpacked_func = None
+
+try:
+    from flash_attn.bert_padding import pad_input, unpad_input
+except Exception:
+    pad_input = None
+    unpad_input = None
+
+
+class FlashAttention(nn.Module):
+    """Implement the scaled dot product attention with softmax.
+    Arguments
+    ---------
+        softmax_scale: The temperature to use for the softmax attention.
+                      (default: 1/sqrt(d_keys) where d_keys is computed at
+                      runtime)
+        attention_dropout: The dropout rate to apply to the attention
+                           (default: 0.0)
+    """
+
+    def __init__(self, softmax_scale=None, attention_dropout=0.0, device=None, dtype=None):
+        super().__init__()
+        self.softmax_scale = softmax_scale
+        self.dropout_p = attention_dropout
+
+    def forward(self, qkv, key_padding_mask=None, causal=False, cu_seqlens=None,
+                max_s=None, need_weights=False):
+        """Implements the multihead softmax attention.
+        Arguments
+        ---------
+            qkv: The tensor containing the query, key, and value. (B, S, 3, H, D) if key_padding_mask is None
+                if unpadded: (nnz, 3, h, d)
+            key_padding_mask: a bool tensor of shape (B, S)
+        """
+        assert not need_weights
+        assert qkv.dtype in [torch.float16, torch.bfloat16]
+        assert qkv.is_cuda
+        if cu_seqlens is None:
+            batch_size = qkv.shape[0]
+            seqlen = qkv.shape[1]
+            if key_padding_mask is None:
+                qkv = rearrange(qkv, 'b s ... -> (b s) ...')
+                max_s = seqlen
+                cu_seqlens = torch.arange(0, (batch_size + 1) * seqlen, step=seqlen, dtype=torch.int32,
+                                          device=qkv.device)
+                output = flash_attn_unpadded_qkvpacked_func(
+                    qkv, cu_seqlens, max_s, self.dropout_p if self.training else 0.0,
+                    softmax_scale=self.softmax_scale, causal=causal
+                )
+                output = rearrange(output, '(b s) ... -> b s ...', b=batch_size)
+            else:
+                nheads = qkv.shape[-2]
+                x = rearrange(qkv, 'b s three h d -> b s (three h d)')
+                x_unpad, indices, cu_seqlens, max_s = unpad_input(x, key_padding_mask)
+                x_unpad = rearrange(x_unpad, 'nnz (three h d) -> nnz three h d', three=3, h=nheads)
+                output_unpad = flash_attn_unpadded_qkvpacked_func(
+                    x_unpad, cu_seqlens, max_s, self.dropout_p if self.training else 0.0,
+                    softmax_scale=self.softmax_scale, causal=causal
+                )
+                output = rearrange(pad_input(rearrange(output_unpad, 'nnz h d -> nnz (h d)'),
+                                             indices, batch_size, seqlen),
+                                   'b s (h d) -> b s h d', h=nheads)
+        else:
+            assert max_s is not None
+            output = flash_attn_unpadded_qkvpacked_func(
+                qkv, cu_seqlens, max_s, self.dropout_p if self.training else 0.0,
+                softmax_scale=self.softmax_scale, causal=causal
+            )
+
+        return output, None
+
+
+def _flash_attn(self, x: torch.Tensor) -> torch.Tensor:
     B, N, C = x.shape
     qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim)
     q, k, v = qkv.unbind(dim=2)  # each: [B, N, num_heads, head_dim]
@@ -80,8 +159,21 @@ def _sdpa_forward(self, x: torch.Tensor) -> torch.Tensor:
 
 
 def replace_vit_attn_with_flash_attn():
-    Attention.forward = _sdpa_forward
-    Attention._sdpa_attn = _sdpa_attn
+    import platform
+    if platform.system() == "Darwin":
+        # Mac: use PyTorch SDPA (flash_attn not available on Apple Silicon)
+        Attention.forward = _sdpa_forward
+        Attention._sdpa_attn = _sdpa_attn
+    elif torch.cuda.is_available():
+        cuda_major, cuda_minor = torch.cuda.get_device_capability()
+        if cuda_major < 8:
+            warnings.warn(
+                'Flash attention is only supported on A100 or H100 GPU during training due to head dim > 64 backward.'
+                'ref: https://github.com/HazyResearch/flash-attention/issues/190#issuecomment-1523359593'
+            )
+        Attention.forward = forward
+        Attention.inner_attn = FlashAttention(attention_dropout=0.0)
+        Attention._flash_attn = _flash_attn
 
 replace_vit_attn_with_flash_attn()
 ####

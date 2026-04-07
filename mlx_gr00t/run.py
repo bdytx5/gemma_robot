@@ -33,15 +33,16 @@ MLX_LLM_DIR = HERE / "gr00t_llm_mlx"
 # ---------------------------------------------------------------------------
 # Step 1: Extract LLM weights from GR00T HF checkpoint
 # ---------------------------------------------------------------------------
-def maybe_extract(gr00t_ckpt: str, checkpoint: str, force: bool, hf_token: str | None = None):
+def maybe_extract(gr00t_ckpt: str, checkpoint: str | None, force: bool, hf_token: str | None = None):
     if HF_LLM_DIR.exists() and (HF_LLM_DIR / "model.safetensors").exists() and not force:
         print(f"[extract] Already done → {HF_LLM_DIR}  (use --force to redo)")
         return
-    print("[extract] Extracting Gemma3-1b weights from GR00T checkpoint...")
+    print("[extract] Extracting Gemma3-270m weights from GR00T checkpoint...")
     cmd = [sys.executable, str(HERE / "extract_llm.py"),
            "--gr00t_repo", gr00t_ckpt,
-           "--checkpoint", checkpoint,
            "--out_dir", str(HF_LLM_DIR)]
+    if checkpoint:
+        cmd += ["--checkpoint", checkpoint]
     if hf_token:
         cmd += ["--hf_token", hf_token]
     subprocess.run(cmd, check=True)
@@ -54,12 +55,12 @@ def maybe_convert(force: bool):
     if MLX_LLM_DIR.exists() and any(MLX_LLM_DIR.iterdir()) and not force:
         print(f"[convert] Already done → {MLX_LLM_DIR}  (use --force to redo)")
         return
-    print("[convert] Converting to MLX (4-bit quantized)...")
+    print("[convert] Converting to MLX (bfloat16)...")
     subprocess.run(
-        [sys.executable, "-m", "mlx_lm.convert",
+        [sys.executable, "-m", "mlx_lm", "convert",
          "--hf-path", str(HF_LLM_DIR),
          "--mlx-path", str(MLX_LLM_DIR),
-         "-q"],
+         "--dtype", "bfloat16"],
         check=True,
     )
 
@@ -114,8 +115,8 @@ def main():
     DEFAULT_TEST_IMAGE = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQThMxfZLtrpL_JSq6ttJo64D7nVKCGFHvKJg&s"
     img_group = p.add_mutually_exclusive_group(required=False)
     img_group.add_argument("--image", help="Path to image file (jpg/png)")
-    img_group.add_argument("--url", default=DEFAULT_TEST_IMAGE,
-                           help="Download image from a URL (default: test image)")
+    img_group.add_argument("--url", default=None,
+                           help="Download image from a URL")
     img_group.add_argument("--webcam", action="store_true", help="Capture one frame from webcam")
 
     # Robot inputs
@@ -127,10 +128,13 @@ def main():
                    help="Language instruction for the robot")
 
     # Model config
-    p.add_argument("--gr00t_ckpt", default="youngbrett48/train_google_robot_eagle2_5")
-    p.add_argument("--checkpoint", default="checkpoint-200",
-                   help="Which checkpoint subfolder to use from the HF repo")
-    p.add_argument("--eagle2_5_repo", default="youngbrett48/train_stage2_gemma3_1b.sh")
+    p.add_argument("--gr00t_ckpt", default="youngbrett48/gr00t-post-train-fractal-270m")
+    p.add_argument(
+        "--checkpoint",
+        default="checkpoint-2000",
+        help="Checkpoint subfolder to use from the HF repo. Leave unset for repo-root models.",
+    )
+    p.add_argument("--eagle2_5_repo", default="youngbrett48/train_stage2_gemma3_270m.sh")
 
     # Misc
     p.add_argument("--hf_token", default=None, help="HuggingFace token for private repos")
@@ -139,6 +143,8 @@ def main():
     p.add_argument("--n_diffusion_steps", type=int, default=4)
 
     args = p.parse_args()
+    if not args.image and not args.url and not args.webcam:
+        args.url = DEFAULT_TEST_IMAGE
 
     # ---- Step 1: extract ----
     maybe_extract(args.gr00t_ckpt, args.checkpoint, args.force, args.hf_token)
@@ -146,24 +152,20 @@ def main():
     # ---- Step 2: convert ----
     maybe_convert(args.force)
 
-    # ---- Step 3: load models (deferred imports so MLX/torch only load once) ----
-    from inference import (
-        load_gr00t_components,
-        build_vision_components,
-        load_mlx_llm,
-        build_dit,
-        run_inference,
-    )
-    from huggingface_hub import hf_hub_download
+    # ---- Step 3: load model ----
+    from gemma_vla import GemmaVLA
 
-    print("\n[load] Loading model components...")
-    state_dict = load_gr00t_components(args.gr00t_ckpt, args.checkpoint)
-    vision_encoder, mlp_projector, eagle_config = build_vision_components(
-        state_dict, args.eagle2_5_repo
+    print("\n[load] Loading GemmaVLA...")
+    tok = args.hf_token or True
+    vla = GemmaVLA.from_pretrained(
+        gr00t_repo=args.gr00t_ckpt,
+        checkpoint=args.checkpoint,
+        eagle_repo=args.eagle2_5_repo,
+        mlx_llm_path=str(MLX_LLM_DIR),
+        hf_token=tok,
+        n_diffusion_steps=args.n_diffusion_steps,
     )
-    mlx_llm, tokenizer = load_mlx_llm(str(MLX_LLM_DIR))
-    cfg_path = hf_hub_download(args.gr00t_ckpt, f"{args.checkpoint}/config.json")
-    dit_model = build_dit(state_dict, cfg_path)
+    print(vla)
 
     # ---- Step 4: get image ----
     image = get_image(args.image, args.url, args.webcam)
@@ -178,17 +180,10 @@ def main():
     # ---- Step 6: run inference ----
     print(f"\n[infer] Instruction: \"{args.instruction}\"")
     print(f"[infer] State: {robot_state}")
-    actions = run_inference(
+    actions = vla.get_action(
         image=image,
         robot_state=robot_state,
-        language_instruction=args.instruction,
-        vision_encoder=vision_encoder,
-        mlp_projector=mlp_projector,
-        mlx_llm=mlx_llm,
-        tokenizer=tokenizer,
-        dit_model=dit_model,
-        eagle_config=eagle_config,
-        n_diffusion_steps=args.n_diffusion_steps,
+        instruction=args.instruction,
     )
 
     print(f"\n✓ Predicted actions  shape={actions.shape}")

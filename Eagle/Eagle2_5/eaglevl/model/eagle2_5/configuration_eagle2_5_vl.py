@@ -152,7 +152,7 @@ class Eagle2_5_VLConfig(PretrainedConfig):
         output['tie_word_embeddings'] = self.tie_word_embeddings
         output['image_token_index'] = self.image_token_index
         output['_attn_implementation'] = self._attn_implementation
-        output['_attn_implementation_autoset'] = self._attn_implementation_autoset
+        output['_attn_implementation_autoset'] = getattr(self, '_attn_implementation_autoset', True)
         output['use_pixel_shuffle'] = self.use_pixel_shuffle
         output['mlp_connector_layers'] = self.mlp_connector_layers
         return output

@@ -60,7 +60,10 @@ from eaglevl.model.c_radio.radio_model import RADIOModel, RADIOConfig
 from eaglevl.sp_utils import  (get_pg_manager, split_for_sequence_parallel, ring_split_for_sequence_parallel,
                                 gather_from_sequence_parallel, ring_gather_for_sequence_parallel)
 
-from eaglevl.train.liger_loss_weight_ops import LigerFusedLinearCrossEntropyLoss
+try:
+    from eaglevl.train.liger_loss_weight_ops import LigerFusedLinearCrossEntropyLoss
+except ImportError:
+    LigerFusedLinearCrossEntropyLoss = None
 from transformers.utils import add_start_docstrings, add_start_docstrings_to_model_forward, replace_return_docstrings
 
 logger = logging.get_logger(__name__)
