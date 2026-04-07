@@ -1,4 +1,5 @@
 import argparse
+import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 from functools import partial
@@ -14,6 +15,29 @@ from gr00t.policy import BasePolicy
 import gymnasium as gym
 import numpy as np
 from tqdm import tqdm
+
+
+class DeterministicResetWrapper(gym.Wrapper):
+    """Intercepts reset() to inject a deterministic per-episode seed."""
+    def __init__(self, env, base_seed):
+        super().__init__(env)
+        self._base_seed = base_seed
+        self._episode_count = 0
+
+    def reset(self, *, seed=None, options=None):
+        if self._base_seed is not None:
+            ep_seed = self._base_seed + self._episode_count * 1000
+            self._episode_count += 1
+            return self.env.reset(seed=ep_seed, options=options)
+        self._episode_count += 1
+        return self.env.reset(seed=seed, options=options)
+
+
+def _make_deterministic_env(orig_fn, base_seed):
+    """Picklable factory for DeterministicResetWrapper."""
+    def wrapped():
+        return DeterministicResetWrapper(orig_fn(), base_seed)
+    return wrapped
 
 
 @dataclass
@@ -240,6 +264,7 @@ def run_rollout_gymnasium_policy(
     n_episodes: int = 10,
     n_envs: int = 1,
     seed: int | None = None,
+    progress_file: str | None = None,
 ) -> Any:
     """Run policy rollouts in parallel environments.
 
@@ -275,13 +300,18 @@ def run_rollout_gymnasium_policy(
         for idx in range(n_envs)
     ]
 
-    # Disable autoreset when n_envs=1 so we can seed each episode deterministically.
-    # For n_envs>1 we keep autoreset — individual sub-env reset isn't cleanly supported.
-    if n_envs == 1:
-        env = gym.vector.SyncVectorEnv(env_fns, autoreset_mode="Disabled")
+    # Wrap each env_fn so that every reset() call uses a deterministic seed.
+    # This ensures episodes are reproducible regardless of n_envs or autoreset behavior.
+    # Uses module-level classes so they're picklable for AsyncVectorEnv (spawn context).
+    wrapped_env_fns = [_make_deterministic_env(fn, seed) for fn in env_fns]
+
+    # FORCE_SYNC=1 env var or n_envs==1 → SyncVectorEnv (safer for tasks with Vulkan spawn issues)
+    force_sync = os.environ.get("FORCE_SYNC", "0") == "1"
+    if n_envs == 1 or force_sync:
+        env = gym.vector.SyncVectorEnv(wrapped_env_fns)
     else:
         env = gym.vector.AsyncVectorEnv(
-            env_fns,
+            wrapped_env_fns,
             shared_memory=False,
             context="spawn",
         )
@@ -294,20 +324,36 @@ def run_rollout_gymnasium_policy(
     current_successes = [False] * n_envs
     episode_successes = []
     episode_infos = defaultdict(list)
-    # Per-env episode counter for deterministic seeding
-    env_episode_counter = [0] * n_envs
-
-    # Initial reset with deterministic seed
-    if seed is not None:
-        observations, _ = env.reset(seed=seed)
-    else:
-        observations, _ = env.reset()
+    # Initial reset — DeterministicResetWrapper handles seeding automatically
+    observations, _ = env.reset()
     policy.reset()
     i = 0
-    episode_seed_counter = 0
 
     MAX_CONSECUTIVE_FAILURES = 3  # give up on this env after this many crashes in a row
     consecutive_failures = 0
+    max_steps = wrapper_configs.multistep.max_episode_steps
+
+    def _write_progress():
+        if not progress_file:
+            return
+        import json as _json
+        status = {
+            "env_name": env_name,
+            "step": i,
+            "completed_episodes": completed_episodes,
+            "n_episodes": n_episodes,
+            "n_envs": n_envs,
+            "max_steps_per_episode": max_steps,
+            "successes_so_far": sum(episode_successes) if episode_successes else 0,
+            "elapsed": round(time.time() - start_time, 1),
+            "current_ep_steps": [current_lengths[e] for e in range(n_envs)],
+        }
+        try:
+            with open(progress_file + ".tmp", "w") as f:
+                _json.dump(status, f)
+            os.replace(progress_file + ".tmp", progress_file)
+        except Exception:
+            pass
 
     pbar = tqdm(total=n_episodes, desc="Episodes")
     while completed_episodes < n_episodes:
@@ -333,7 +379,7 @@ def run_rollout_gymnasium_policy(
                 break
             # Try to reset the env and keep going
             try:
-                observations, _ = env.reset(seed=seed if seed is not None else None)
+                observations, _ = env.reset()
                 policy.reset()
                 print("[rollout] env reset OK — continuing")
                 continue
@@ -345,6 +391,7 @@ def run_rollout_gymnasium_policy(
         # NOTE (FY): Currently we don't properly handle policy reset. For now, our policy are stateless,
         # but in the future if we need policy to be stateful, we need to detect env reset and call policy.reset()
         i += 1
+        _write_progress()
         # Update episode tracking
         for env_idx in range(n_envs):
             if "success" in env_infos:
@@ -393,39 +440,30 @@ def run_rollout_gymnasium_policy(
                     episode_infos["q_score"].append(np.max(env_infos["q_score"][env_idx]))
                 if "valid" in env_infos:
                     episode_infos["valid"].append(all(env_infos["valid"][env_idx]))
-                # Accumulate results
-                episode_lengths.append(current_lengths[env_idx])
-                episode_successes.append(current_successes[env_idx])
-                # Reset trackers for this environment.
-                current_successes[env_idx] = False
-                # only update completed_episodes if valid
-                if "valid" in episode_infos:
-                    if episode_infos["valid"][-1]:
+                # Accumulate results — cap at n_episodes to avoid overshoot
+                if completed_episodes < n_episodes:
+                    episode_lengths.append(current_lengths[env_idx])
+                    episode_successes.append(current_successes[env_idx])
+                    # only update completed_episodes if valid
+                    if "valid" in episode_infos:
+                        if episode_infos["valid"][-1]:
+                            completed_episodes += 1
+                            pbar.update(1)
+                    else:
                         completed_episodes += 1
                         pbar.update(1)
-                else:
-                    # envs don't return valid
-                    completed_episodes += 1
-                    pbar.update(1)
+                # Reset trackers for this environment regardless
+                current_successes[env_idx] = False
                 current_rewards[env_idx] = 0
                 current_lengths[env_idx] = 0
 
-                # For n_envs=1 (autoreset disabled): manually reset with per-episode seed
-                if n_envs == 1:
-                    env_episode_counter[env_idx] += 1
-                    if seed is not None:
-                        ep_seed = seed + env_episode_counter[env_idx] * 1000
-                    else:
-                        ep_seed = None
-                    observations, _ = env.reset(seed=ep_seed)
-
-        # For n_envs>1 (autoreset enabled): observations come from next_obs
-        if n_envs > 1 or not any(terminations[eidx] or truncations[eidx] for eidx in range(n_envs)):
-            observations = next_obs
+        # Autoreset handles the reset — DeterministicResetWrapper ensures
+        # each sub-env gets a deterministic seed on every reset() call.
+        observations = next_obs
     pbar.close()
 
     try:
-        env.reset(seed=seed if seed is not None else None)
+        env.reset()
         env.close()
     except Exception:
         pass  # env may already be dead from a crash
@@ -512,6 +550,8 @@ def run_gr00t_sim_policy(
         model_path, embodiment_tag, policy_client_host, policy_client_port
     )
 
+    progress_file = os.path.join(video_dir, "progress.json") if video_dir else None
+
     results = run_rollout_gymnasium_policy(
         env_name=env_name,
         policy=policy,
@@ -519,6 +559,7 @@ def run_gr00t_sim_policy(
         n_episodes=n_episodes,
         n_envs=n_envs,
         seed=seed,
+        progress_file=progress_file,
     )
     print("Video saved to: ", wrapper_configs.video.video_dir)
     return results

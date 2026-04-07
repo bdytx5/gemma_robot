@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GR00T Robot Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0a0a0a;
+      color: #f0f0f0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 16px;
+      padding: 40px;
+      max-width: 500px;
+      width: 100%;
+      text-align: center;
+    }
+    .logo { font-size: 2.5em; margin-bottom: 8px; }
+    h1 { font-size: 1.6em; font-weight: 700; color: #76b900; margin-bottom: 8px; }
+    .task-name { font-size: 1.2em; color: #fff; margin-bottom: 6px; }
+    .task-desc { color: #888; font-size: 0.95em; margin-bottom: 32px; line-height: 1.5; }
+    .form-group { margin-bottom: 16px; text-align: left; }
+    label { display: block; font-size: 0.85em; color: #aaa; margin-bottom: 6px; }
+    input[type="email"] {
+      width: 100%;
+      padding: 12px 16px;
+      background: #111;
+      border: 1px solid #333;
+      border-radius: 8px;
+      color: #fff;
+      font-size: 1em;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input[type="email"]:focus { border-color: #76b900; }
+    button {
+      width: 100%;
+      padding: 14px;
+      background: #76b900;
+      color: #000;
+      border: none;
+      border-radius: 8px;
+      font-size: 1em;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover { background: #8fd400; }
+    button:disabled { background: #333; color: #666; cursor: not-allowed; }
+    .status {
+      margin-top: 24px;
+      padding: 16px;
+      border-radius: 8px;
+      font-size: 0.95em;
+      line-height: 1.6;
+    }
+    .status.queued  { background: #1a2a00; border: 1px solid #76b900; color: #76b900; }
+    .status.done    { background: #001a00; border: 1px solid #00c800; color: #00c800; }
+    .status.failed  { background: #1a0000; border: 1px solid #c80000; color: #ff6666; }
+    .status.error   { background: #1a1000; border: 1px solid #c88000; color: #ffaa44; }
+    .video-link {
+      display: inline-block;
+      margin-top: 12px;
+      padding: 10px 20px;
+      background: #76b900;
+      color: #000;
+      text-decoration: none;
+      border-radius: 6px;
+      font-weight: 700;
+    }
+    .powered { margin-top: 32px; color: #444; font-size: 0.8em; }
+    .spinner {
+      display: inline-block;
+      width: 16px; height: 16px;
+      border: 2px solid #76b900;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .unknown { text-align: center; padding: 40px; color: #888; }
+  </style>
+</head>
+<body>
+<div class="card" id="app">
+  <div class="logo">🤖</div>
+  <div id="content"><p style="color:#666">Loading...</p></div>
+</div>
+
+<script>
+const API_URL = "API_URL_PLACEHOLDER";  // replaced at deploy time
+const params = new URLSearchParams(location.search);
+const taskKey = params.get("task");
+let jobId = null;
+let pollTimer = null;
+
+async function init() {
+  if (!taskKey) {
+    document.getElementById("content").innerHTML = `
+      <div class="unknown">
+        <h2>GR00T Demo</h2>
+        <p style="margin-top:12px">Scan a QR code to begin.</p>
+      </div>`;
+    return;
+  }
+
+  const res = await fetch("tasks.json");
+  const tasks = await res.json();
+  const task = tasks[taskKey];
+
+  if (!task) {
+    document.getElementById("content").innerHTML = `<p class="unknown">Unknown task: ${taskKey}</p>`;
+    return;
+  }
+
+  document.getElementById("content").innerHTML = `
+    <h1>GR00T Robot Demo</h1>
+    <div class="task-name">${task.display}</div>
+    <div class="task-desc">${task.description}</div>
+    <form id="email-form">
+      <div class="form-group">
+        <label for="email">Enter your email to receive the video result</label>
+        <input type="email" id="email" placeholder="you@example.com" required>
+      </div>
+      <button type="submit" id="submit-btn">Watch the Robot ▶</button>
+    </form>
+    <div id="status-area"></div>
+    <div class="powered">Powered by NVIDIA GR00T N1.6</div>
+  `;
+
+  document.getElementById("email-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const email = document.getElementById("email").value;
+    const btn = document.getElementById("submit-btn");
+    btn.disabled = true;
+    btn.textContent = "Submitting...";
+
+    try {
+      const res = await fetch(`${API_URL}/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ task: taskKey, email }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      jobId = data.job_id;
+      const pos = data.position;
+      const eta = Math.round((pos * (task.estimated_seconds || 120)) / 60);
+
+      showStatus("queued", `<span class="spinner"></span> You're #${pos} in the queue — est. ${eta} min. We'll email you when it's done.`);
+      document.getElementById("email-form").style.display = "none";
+      startPolling();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = "Watch the Robot ▶";
+      showStatus("error", `Error: ${err.message}`);
+    }
+  });
+}
+
+function showStatus(type, html) {
+  document.getElementById("status-area").innerHTML = `<div class="status ${type}">${html}</div>`;
+}
+
+function startPolling() {
+  pollTimer = setInterval(async () => {
+    try {
+      const res = await fetch(`${API_URL}/status/${jobId}`);
+      const job = await res.json();
+      if (job.status === "done") {
+        clearInterval(pollTimer);
+        const emoji = job.success ? "✅" : "❌";
+        const result = job.success ? "Success!" : "Not quite this time.";
+        showStatus("done", `${emoji} <strong>${result}</strong><br>
+          Check your email for the video link!<br>
+          ${job.result_url ? `<a class="video-link" href="${job.result_url}" target="_blank">Watch Video</a>` : ""}`);
+      } else if (job.status === "failed") {
+        clearInterval(pollTimer);
+        showStatus("failed", "❌ The eval failed. Please try again.");
+      }
+    } catch (e) { /* ignore transient errors */ }
+  }, 15000);
+}
+
+init();
+</script>
+</body>
+</html>

@@ -8,7 +8,7 @@
 #   bash scripts/eval_compare.sh --ours /path/to/checkpoint
 #   N_EPISODES=200 N_ENVS=20 bash scripts/eval_compare.sh
 
-set -e
+set +e  # Don't exit on error — we handle failures per-task
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -40,7 +40,19 @@ ALL_ENVS=(
     "simpler_env_google/google_robot_pick_object"
     "simpler_env_google/google_robot_move_near"
 )
-if [ -n "${N_TASKS:-}" ] && [ "$N_TASKS" -lt "${#ALL_ENVS[@]}" ]; then
+if [ -n "${ENVS_FILTER:-}" ]; then
+    # ENVS_FILTER: comma-separated substring(s) to match against task names
+    ENVS=()
+    IFS=',' read -ra FILTERS <<< "$ENVS_FILTER"
+    for e in "${ALL_ENVS[@]}"; do
+        for f in "${FILTERS[@]}"; do
+            if [[ "$e" == *"$f"* ]]; then
+                ENVS+=("$e")
+                break
+            fi
+        done
+    done
+elif [ -n "${N_TASKS:-}" ] && [ "$N_TASKS" -lt "${#ALL_ENVS[@]}" ]; then
     ENVS=("${ALL_ENVS[@]:0:$N_TASKS}")
 else
     ENVS=("${ALL_ENVS[@]}")
@@ -72,8 +84,26 @@ fi
 STEP=$(basename "$OURS_CKPT" | sed 's/checkpoint-//')
 STOCK="nvidia/GR00T-N1.6-fractal"
 VIDEO_ROOT="/tmp/gr00t_eval_compare"
-rm -rf "$VIDEO_ROOT"
+mkdir -p "$VIDEO_ROOT"
+# Rebuild RESULTS_FILE from any existing result.json files (resume support, no duplicates)
 rm -f "$RESULTS_FILE"
+for model_tag in stock ours; do
+    model_name="$model_tag"
+    step_val=0
+    [ "$model_tag" = "ours" ] && step_val="$STEP"
+    for env in "${ALL_ENVS[@]}"; do
+        env_short=$(basename "$env")
+        json="$VIDEO_ROOT/$model_tag/$env_short/result.json"
+        if [ -f "$json" ]; then
+            python3 -c "
+import json
+r = json.load(open('$json'))
+r['step'] = $step_val; r['model'] = '$model_name'
+print(json.dumps(r))
+" >> "$RESULTS_FILE"
+        fi
+    done
+done
 
 start_server() {
     local model_path=$1 port=$2 use_stock=${3:-0}
@@ -90,7 +120,7 @@ start_server() {
     fi
     SERVER_PID=$!
     echo "[server] Started PID $SERVER_PID on port $port, waiting..."
-    for i in $(seq 1 180); do
+    for i in $(seq 1 600); do
         if python3 -c "import socket; s=socket.socket(); s.settimeout(1); s.connect(('127.0.0.1',$port)); s.close()" 2>/dev/null; then
             echo "[server] Port $port ready."
             return 0
@@ -111,8 +141,9 @@ kill_server() {
 
 run_all_envs() {
     local model_name=$1 port=$2 step=$3 video_dir=$4
-    local pids=()
 
+    # Run tasks ONE AT A TIME (sequential) to avoid Vulkan device lost errors,
+    # but each task uses N_ENVS parallel sub-envs for speed.
     for env_idx in "${!ENVS[@]}"; do
         local env="${ENVS[$env_idx]}"
         local env_short=$(basename "$env")
@@ -120,41 +151,52 @@ run_all_envs() {
         local out_dir="$video_dir/$env_short"
         mkdir -p "$out_dir"
 
-        echo "  [$model_name] Starting $env_short (seed=$seed, n_episodes=$N_EPISODES, n_envs=$N_ENVS, max_steps=$MAX_EPISODE_STEPS)..."
-        env VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json \
-            "$ROLLOUT_PYTHON" "$ROLLOUT_SCRIPT" \
-            --env_name "$env" --n_episodes "$N_EPISODES" --n_envs "$N_ENVS" \
-            --n_action_steps 8 --max_episode_steps "$MAX_EPISODE_STEPS" \
-            --policy_client_host 127.0.0.1 --policy_client_port "$port" \
-            --output_json "$out_dir/result.json" --video_dir "$out_dir" --seed "$seed" \
-            > "$out_dir/stdout.log" 2>&1 &
-        pids+=($!)
-    done
+        # Skip if already completed (result already in RESULTS_FILE from startup rebuild)
+        if [ -f "$out_dir/result.json" ]; then
+            local sr=$(python3 -c "import json; print(json.load(open('$out_dir/result.json'))['success_rate'])")
+            echo "  [$model_name] $env_short: already done ($sr), skipping"
+            continue
+        fi
 
-    echo "  [$model_name] Waiting for ${#pids[@]} envs to finish..."
-    for pid in "${pids[@]}"; do
-        wait $pid 2>/dev/null || true
-    done
-    echo "  [$model_name] All envs done."
+        local max_retries=10
+        local attempt=0
+        local success=false
 
-    # Collect results
-    for env_idx in "${!ENVS[@]}"; do
-        local env="${ENVS[$env_idx]}"
-        local env_short=$(basename "$env")
-        local json="$video_dir/$env_short/result.json"
-        if [ -f "$json" ]; then
-            python3 -c "
+        while [ $attempt -lt $max_retries ] && [ "$success" = "false" ]; do
+            attempt=$((attempt + 1))
+            echo "  [$model_name] Running $env_short attempt $attempt/$max_retries (seed=$seed, n_episodes=$N_EPISODES, n_envs=$N_ENVS, max_steps=$MAX_EPISODE_STEPS)..."
+            rm -f "$out_dir/result.json"
+            env VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json \
+                "$ROLLOUT_PYTHON" "$ROLLOUT_SCRIPT" \
+                --env_name "$env" --n_episodes "$N_EPISODES" --n_envs "$N_ENVS" \
+                --n_action_steps 8 --max_episode_steps "$MAX_EPISODE_STEPS" \
+                --policy_client_host 127.0.0.1 --policy_client_port "$port" \
+                --output_json "$out_dir/result.json" --video_dir "$out_dir" --seed "$seed" \
+                > "$out_dir/stdout.log" 2>&1
+            local rc=$?
+
+            if [ -f "$out_dir/result.json" ]; then
+                python3 -c "
 import json
-r = json.load(open('$json'))
+r = json.load(open('$out_dir/result.json'))
 r['step'] = $step; r['model'] = '$model_name'
 print(json.dumps(r))
 " >> "$RESULTS_FILE"
-            local sr=$(python3 -c "import json; print(json.load(open('$json'))['success_rate'])")
-            echo "  [$model_name] $env_short: $sr"
-        else
-            echo "  [$model_name] $env_short: FAIL (no result)"
-        fi
+                local sr=$(python3 -c "import json; print(json.load(open('$out_dir/result.json'))['success_rate'])")
+                echo "  [$model_name] $env_short: $sr (exit=$rc)"
+                success=true
+            else
+                echo "  [$model_name] $env_short: FAIL attempt $attempt (exit=$rc, no result)"
+                if [ $attempt -lt $max_retries ]; then
+                    echo "  [$model_name] $env_short: Retrying in 5s..."
+                    sleep 5
+                else
+                    echo "  [$model_name] $env_short: FAILED after $max_retries attempts"
+                fi
+            fi
+        done
     done
+    echo "  [$model_name] All envs done."
 }
 
 echo "============================================"
@@ -302,7 +344,55 @@ print('[wandb] Done.')
 echo ""
 echo "[weave] Logging results to Weave..."
 $PYTHON -c "
-import json, os, glob, weave
+import json, os, glob, weave, cv2
+import numpy as np
+from PIL import Image
+
+def video_to_grid(video_path, n_frames=6):
+    \"\"\"Extract n_frames from a video (first, last, and evenly spaced in between)
+    and return a PIL Image grid.\"\"\"
+    cap = cv2.VideoCapture(video_path)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total <= 0:
+        cap.release()
+        return None
+
+    # Pick frame indices: first, last, and evenly spaced in between
+    if total <= n_frames:
+        indices = list(range(total))
+    else:
+        indices = [0] + [int(round(i * (total - 1) / (n_frames - 1))) for i in range(1, n_frames - 1)] + [total - 1]
+
+    frames = []
+    for idx in indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = cap.read()
+        if ret:
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    cap.release()
+
+    if not frames:
+        return None
+
+    # Build grid: 2 rows x 3 columns
+    cols = 3
+    rows = 2
+    gap = 4
+    h, w = frames[0].shape[:2]
+    # Pad frames list to fill grid if needed
+    while len(frames) < rows * cols:
+        frames.append(np.ones((h, w, 3), dtype=np.uint8) * 40)
+    grid_w = cols * w + (cols - 1) * gap
+    grid_h = rows * h + (rows - 1) * gap
+    grid = np.ones((grid_h, grid_w, 3), dtype=np.uint8) * 40
+    for idx, f in enumerate(frames[:rows * cols]):
+        r, c = divmod(idx, cols)
+        y = r * (h + gap)
+        x = c * (w + gap)
+        grid[y:y+h, x:x+w] = f
+
+    return Image.fromarray(grid)
+
 
 weave.init('byyoung3/$WANDB_PROJECT')
 
@@ -341,9 +431,10 @@ for model_name, model_results in [('stock-n1.6', stock), ('ours-step$STEP', ours
         vid_dir = os.path.join(video_root, tag, env)
         vids = sorted(glob.glob(os.path.join(vid_dir, '*.mp4'))) if os.path.isdir(vid_dir) else []
         for i, succ in enumerate(r.get('episode_successes', [])):
+            grid_img = video_to_grid(vids[i]) if i < len(vids) else None
             pred = ev.log_prediction(
                 inputs={'task': env, 'episode': i},
-                output={'success': bool(succ), 'video': vids[i] if i < len(vids) else None},
+                output={'success': bool(succ), 'frames': grid_img},
             )
             pred.log_score(scorer='success', score=bool(succ))
             pred.finish()

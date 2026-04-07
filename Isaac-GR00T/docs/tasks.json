@@ -1,0 +1,32 @@
+{
+  "open_drawer": {
+    "display": "Open a Drawer",
+    "description": "The robot reaches out and opens a cabinet drawer from scratch.",
+    "estimated_seconds": 120
+  },
+  "close_drawer": {
+    "display": "Close a Drawer",
+    "description": "The robot pushes an open drawer shut.",
+    "estimated_seconds": 90
+  },
+  "place_in_closed_drawer": {
+    "display": "Place Object in Closed Drawer",
+    "description": "The robot opens a drawer, places an object inside, then closes it.",
+    "estimated_seconds": 150
+  },
+  "pick_coke_can": {
+    "display": "Pick Up a Coke Can",
+    "description": "The robot grasps a Coke can from a table.",
+    "estimated_seconds": 90
+  },
+  "pick_object": {
+    "display": "Pick Up an Object",
+    "description": "The robot picks up a small object from a cluttered table.",
+    "estimated_seconds": 90
+  },
+  "move_near": {
+    "display": "Move Object Near Target",
+    "description": "The robot pushes an object to within reach of a target location.",
+    "estimated_seconds": 90
+  }
+}
