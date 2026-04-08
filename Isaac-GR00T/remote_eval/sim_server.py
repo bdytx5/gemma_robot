@@ -183,11 +183,14 @@ async def step(request: Request):
 
 
 def _batch_obs(obs: dict) -> dict:
-    """Add batch dim (B=1) to obs arrays so Gr00tSimPolicyWrapper sees (B, T, H, W, C)."""
+    """Add batch dim (B=1) and fix dtypes so Gr00tSimPolicyWrapper sees (B, T, H, W, C)."""
     batched = {}
     for k, v in obs.items():
         if isinstance(v, np.ndarray):
-            batched[k] = v[np.newaxis]   # (T,...) → (1, T, ...)
+            arr = v[np.newaxis]   # (T,...) → (1, T, ...)
+            if k.startswith("state."):
+                arr = arr.astype(np.float32)
+            batched[k] = arr
         elif isinstance(v, str):
             batched[k] = (v,)            # str → tuple[str] with B=1
         else:
