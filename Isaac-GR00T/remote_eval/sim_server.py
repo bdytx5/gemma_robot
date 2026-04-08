@@ -27,12 +27,10 @@ from fastapi import FastAPI, Request, Response
 
 # ── path setup ────────────────────────────────────────────────────────────────
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SIMPLER_VENV = REPO_ROOT / "gr00t/eval/sim/SimplerEnv/simpler_uv/.venv"
-SIMPLER_SITE = SIMPLER_VENV / "lib/python3.10/site-packages"
 EXTERNAL = REPO_ROOT / "external_dependencies/SimplerEnv"
 MANISKILL = EXTERNAL / "ManiSkill2_real2sim"
 
-for p in [str(SIMPLER_SITE), str(EXTERNAL), str(MANISKILL), str(REPO_ROOT)]:
+for p in [str(EXTERNAL), str(MANISKILL), str(REPO_ROOT)]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
