@@ -130,6 +130,7 @@ class VideoRecordingWrapper(gym.Wrapper):
         steps_per_render=1,
         max_episode_steps=720,
         overlay_text=True,
+        env_idx=0,
         **kwargs,
     ):
         """
@@ -150,6 +151,8 @@ class VideoRecordingWrapper(gym.Wrapper):
         self.overlay_text = overlay_text
 
         self.step_count = 0
+        self.env_idx = env_idx
+        self.episode_idx = -1  # incremented to 0 on first reset
 
         self.is_success = False
 
@@ -327,8 +330,9 @@ class VideoRecordingWrapper(gym.Wrapper):
         # "intermediate_signals" contain the metrics for 5DC tasks to indicate language following
         self.intermediate_signals = {}
 
+        self.episode_idx += 1
         if self.video_dir is not None:
-            self.file_path = self.video_dir / f"{uuid.uuid4()}.mp4"
+            self.file_path = self.video_dir / f"env{self.env_idx:02d}_ep{self.episode_idx:03d}.mp4"
         return result
 
     def step(self, action):

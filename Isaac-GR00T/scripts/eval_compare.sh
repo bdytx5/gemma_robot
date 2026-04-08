@@ -261,6 +261,7 @@ print(f'{\"MEAN\":<40} {sm:>7.0%} {om:>7.0%} {sign}{d:>7.0%}')
 # ── Upload to W&B as comparison table with videos ────────────────────────────
 echo ""
 echo "[wandb] Uploading comparison table..."
+RUN_TS=$(date +%m%d-%H%M)
 $PYTHON -c "
 import json, wandb, os, glob
 
@@ -276,8 +277,8 @@ all_envs = sorted(set(list(stock.keys()) + list(ours.keys())))
 # Create W&B run
 run = wandb.init(
     project='$WANDB_PROJECT',
-    name='compare-stock-vs-ours-step$STEP',
-    id='compare-stock-vs-ours-step$STEP',
+    name='eval-compare-step$STEP-$RUN_TS',
+    id='eval-compare-step$STEP-$RUN_TS',
     resume='allow',
 )
 

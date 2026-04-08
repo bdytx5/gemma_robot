@@ -244,6 +244,7 @@ def create_eval_env(
             steps_per_render=wrapper_configs.video.steps_per_render,
             max_episode_steps=wrapper_configs.video.max_episode_steps,
             overlay_text=wrapper_configs.video.overlay_text,
+            env_idx=env_idx,
         )
 
     env = MultiStepWrapper(
@@ -303,7 +304,13 @@ def run_rollout_gymnasium_policy(
     # Wrap each env_fn so that every reset() call uses a deterministic seed.
     # This ensures episodes are reproducible regardless of n_envs or autoreset behavior.
     # Uses module-level classes so they're picklable for AsyncVectorEnv (spawn context).
-    wrapped_env_fns = [_make_deterministic_env(fn, seed) for fn in env_fns]
+    # Each env gets a unique seed offset so parallel envs don't all see identical episodes.
+    # env_idx=0 → seed, env_idx=1 → seed+100000, etc. The *1000 stride within each env
+    # (see DeterministicResetWrapper) stays well within the 100k gap.
+    wrapped_env_fns = [
+        _make_deterministic_env(fn, seed + idx * 100000 if seed is not None else None)
+        for idx, fn in enumerate(env_fns)
+    ]
 
     # FORCE_SYNC=1 env var or n_envs==1 → SyncVectorEnv (safer for tasks with Vulkan spawn issues)
     force_sync = os.environ.get("FORCE_SYNC", "0") == "1"

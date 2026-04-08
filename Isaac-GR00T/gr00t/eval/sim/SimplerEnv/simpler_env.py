@@ -57,8 +57,6 @@ class GoogleFractalEnv(gym.Env):
         self.sticky_gripper_action = 0.0
         self.gripper_action_repeat = 0
         self.sticky_gripper_num_repeat = 15
-        self._base_seed = None
-        self._episode_counter = 0
 
     def reset(self, seed=None, options=None):
         self.previous_gripper_action = None
@@ -66,16 +64,8 @@ class GoogleFractalEnv(gym.Env):
         self.sticky_gripper_action = 0.0
         self.gripper_action_repeat = 0
         if seed is not None:
-            self._base_seed = seed
-            self._episode_counter = 0
-        # Always derive a deterministic seed once a base seed is set
-        if self._base_seed is not None:
-            ep_seed = self._base_seed + self._episode_counter
-            self._episode_counter += 1
-            self.env.unwrapped._main_seed = ep_seed
-            np.random.seed(ep_seed)
-            seed = ep_seed
-        observation, info = self.env.reset(seed=seed)
+            np.random.seed(seed)
+        observation, info = self.env.reset(seed=seed, options=options)
         observation = self._process_observation(observation)
         info["success"] = False
         return observation, info
