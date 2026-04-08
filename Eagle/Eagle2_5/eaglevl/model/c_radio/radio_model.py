@@ -166,7 +166,7 @@ def replace_vit_attn_with_flash_attn():
                 'Flash attention is only supported on A100 or H100 GPU during training due to head dim > 64 backward.'
                 'ref: https://github.com/HazyResearch/flash-attention/issues/190#issuecomment-1523359593'
             )
-        Attention.forward = forward
+        Attention.forward = _flash_attn
         Attention.inner_attn = FlashAttention(attention_dropout=0.0)
         Attention._flash_attn = _flash_attn
 
