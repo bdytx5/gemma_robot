@@ -52,7 +52,8 @@ class GemmaVLA:
     """
 
     def __init__(self, vision_model, llm, tokenizer, dit, dit_config,
-                 image_token_index: int, image_size: int, n_diffusion_steps: int = 4):
+                 image_token_index: int, image_size: int, n_diffusion_steps: int = 4,
+                 action_norm_stats: dict | None = None):
         self.vision_model = vision_model
         self.llm = llm
         self.tokenizer = tokenizer
@@ -63,6 +64,34 @@ class GemmaVLA:
         self.n_diffusion_steps = n_diffusion_steps
         self._max_state_dim = (dit_config.get("max_state_dim", 128)
                                if isinstance(dit_config, dict) else dit_config.max_state_dim)
+        # Norm stats for state (input) and action (output)
+        # State: min-max norm  → normalized = (raw - q01) / (q99 - q01) * 2 - 1
+        # Action x/y/z/roll/pitch/yaw: mean/std norm → raw = model_out * std + mean
+        # Action gripper: min-max norm → raw = (model_out + 1) / 2 * (q99 - q01) + q01
+        self._state_q01 = None
+        self._state_q99 = None
+        self._action_mean = None
+        self._action_std = None
+        self._action_grip_q01 = None
+        self._action_grip_q99 = None
+
+        if action_norm_stats:
+            all_stats = action_norm_stats   # keys: "state", "action"
+            s = all_stats.get("state", {})
+            a = all_stats.get("action", {})
+
+            # State norm (8 dims: x y z rx ry rz rw gripper)
+            state_keys = ["x", "y", "z", "rx", "ry", "rz", "rw", "gripper"]
+            self._state_q01 = np.array([s[k]["q01"][0] for k in state_keys], dtype=np.float32)
+            self._state_q99 = np.array([s[k]["q99"][0] for k in state_keys], dtype=np.float32)
+
+            # Action denorm — x/y/z/roll/pitch/yaw: mean/std; gripper: min-max
+            ms_keys = ["x", "y", "z", "roll", "pitch", "yaw"]
+            self._action_mean = np.array([a[k]["mean"][0] for k in ms_keys], dtype=np.float32)
+            self._action_std  = np.array([a[k]["std"][0]  for k in ms_keys], dtype=np.float32)
+            self._action_grip_q01 = np.float32(a["gripper"]["q01"][0])
+            self._action_grip_q99 = np.float32(a["gripper"]["q99"][0])
+            print(f"  Norm stats loaded: state {len(state_keys)}D, action {len(ms_keys)+1}D")
 
     # ------------------------------------------------------------------
     # Factory
@@ -97,6 +126,17 @@ class GemmaVLA:
         from huggingface_hub import snapshot_download, hf_hub_download
         from safetensors.torch import load_file
         import glob
+
+        # 0. Load action normalization stats
+        print("[GemmaVLA] Loading action norm stats...")
+        stats_path = hf_hub_download(gr00t_repo, "statistics.json", token=hf_token)
+        with open(stats_path) as f:
+            all_stats = json.load(f)
+        action_norm_stats = all_stats.get("oxe_google", None)
+        if action_norm_stats:
+            print(f"  Found stats for oxe_google: {list(action_norm_stats.keys())}")
+        else:
+            print("  WARNING: no oxe_google stats found — state/actions will NOT be normalized")
 
         # 1. Download GR00T checkpoint weights
         print("[GemmaVLA] Loading GR00T checkpoint...")
@@ -165,6 +205,7 @@ class GemmaVLA:
             image_token_index=image_token_index,
             image_size=image_size,
             n_diffusion_steps=n_diffusion_steps,
+            action_norm_stats=action_norm_stats,
         )
 
     # ------------------------------------------------------------------
@@ -195,7 +236,7 @@ class GemmaVLA:
         steps = n_diffusion_steps or self.n_diffusion_steps
 
         # --- A. Preprocess image → MLX NHWC float32 [-1, 1] ---
-        img = image.convert("RGB").resize((self.image_size, self.image_size))
+        img = image.convert("RGB").resize((self.image_size, self.image_size), Image.BICUBIC)
         img_np = (np.array(img, dtype=np.float32) / 255.0 - 0.5) / 0.5
         pixel_values = mx.array(img_np[None])   # (1, H, W, 3)
 
@@ -235,8 +276,15 @@ class GemmaVLA:
         bb_attn = mx.ones((1, T), dtype=mx.bool_)
         img_mask_mx = mx.array(img_mask_np[None])
 
+        # Normalize state before feeding to DiT (min-max → [-1, 1])
+        norm_state = robot_state.copy()
+        if self._state_q01 is not None:
+            d = len(self._state_q01)
+            rng = np.maximum(self._state_q99 - self._state_q01, 1e-8)
+            norm_state[:d] = (robot_state[:d] - self._state_q01) / rng * 2.0 - 1.0
+
         padded_state = np.zeros(self._max_state_dim, dtype=np.float32)
-        padded_state[:robot_state.shape[0]] = robot_state
+        padded_state[:norm_state.shape[0]] = norm_state
         state_mx = mx.array(padded_state[None, None, :])
         emb_id_mx = mx.full((1,), embodiment_id, dtype=mx.int32)
 
@@ -244,7 +292,25 @@ class GemmaVLA:
         actions = self.dit.get_action(hidden_states, bb_attn, img_mask_mx, state_mx, emb_id_mx)
         mx.eval(actions)
 
-        return np.array(actions, copy=False)
+        actions_np = np.array(actions, copy=False)   # (1, action_horizon, 128)
+
+        # Denormalize actions back to physical units
+        # x/y/z/roll/pitch/yaw: mean/std → raw = model_out * std + mean
+        # gripper: min-max → raw = (model_out + 1) / 2 * (q99 - q01) + q01
+        if self._action_mean is not None:
+            actions_np = actions_np.copy()
+            n_ms = len(self._action_mean)                    # 6 (x y z roll pitch yaw)
+            actions_np[..., :n_ms] = (
+                actions_np[..., :n_ms] * self._action_std + self._action_mean
+            )
+            grip = np.clip(actions_np[..., n_ms], -1.0, 1.0)
+            actions_np[..., n_ms] = (
+                (grip + 1.0) / 2.0
+                * (self._action_grip_q99 - self._action_grip_q01)
+                + self._action_grip_q01
+            )
+
+        return actions_np
 
     # ------------------------------------------------------------------
     # Convenience

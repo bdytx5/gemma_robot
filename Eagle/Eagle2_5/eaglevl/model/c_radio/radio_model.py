@@ -154,16 +154,11 @@ def _flash_attn(self, x: torch.Tensor) -> torch.Tensor:
     return x
 
 
-def _sdpa_forward(self, x: torch.Tensor) -> torch.Tensor:
-    return self._sdpa_attn(x)
-
-
 def replace_vit_attn_with_flash_attn():
     import platform
     if platform.system() == "Darwin":
         # Mac: use PyTorch SDPA (flash_attn not available on Apple Silicon)
-        Attention.forward = _sdpa_forward
-        Attention._sdpa_attn = _sdpa_attn
+        Attention.forward = _flash_attn
     elif torch.cuda.is_available():
         cuda_major, cuda_minor = torch.cuda.get_device_capability()
         if cuda_major < 8:
