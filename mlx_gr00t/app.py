@@ -32,6 +32,19 @@ for p in [str(HERE), str(ISAAC), str(EAGLE)]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
+# ── remote config ────────────────────────────────────────────────────────────
+_CONFIG_DOC = "https://docs.google.com/document/d/1wF4OwIRHZAGgZDBgXPliWfG589QbeTSKM46SozpsxWI/export?format=txt"
+
+def _fetch_server_url() -> str:
+    try:
+        r = requests.get(_CONFIG_DOC, timeout=5)
+        url = r.text.strip().lstrip("\ufeff")   # strip BOM
+        if url.startswith("http"):
+            return url
+    except Exception:
+        pass
+    return "https://"
+
 # ── constants ─────────────────────────────────────────────────────────────────
 BG       = "#1a1a1a"
 BG2      = "#242424"
@@ -205,6 +218,7 @@ class GemmaRobotApp:
         tk.Label(cfg, text="Server URL", bg=BG2, fg=TEXT_DIM,
                  font=(FONT, 11)).grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._url_var = tk.StringVar(value="https://")
+        threading.Thread(target=self._load_server_url, daemon=True).start()
         url_entry = tk.Entry(cfg, textvariable=self._url_var, bg=BG3,
                              fg=TEXT, insertbackground=TEXT, relief="flat",
                              font=(FONT, 12), width=42)
@@ -343,6 +357,10 @@ class GemmaRobotApp:
         self._log.insert("end", msg + "\n", tag)
         self._log.see("end")
         self._log.config(state="disabled")
+
+    def _load_server_url(self):
+        url = _fetch_server_url()
+        self._q.put((self._url_var.set, (url,), {}))
 
     def _set_status(self, text, color):
         self._status_lbl.config(text=text)
