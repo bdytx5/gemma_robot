@@ -2,9 +2,9 @@
 GemmaVLA — full Vision-Language-Action model for robot inference on Apple Silicon.
 
 Wraps the complete GR00T pipeline as a single class:
-  - SigLIP vision encoder   (MLX, float16)
+  - SigLIP vision encoder   (MLX, bfloat16)
   - Gemma3 LLM trunk        (MLX, bfloat16)
-  - DiT action head         (MLX, float16, flow matching)
+  - DiT action head         (MLX, bfloat16, flow matching)
 
 Usage:
     from gemma_vla import GemmaVLA
@@ -45,7 +45,7 @@ class GemmaVLA:
     Components:
         vision_model  — SigLIP ViT + pixel_shuffle + MLP projector
         llm           — Gemma3 transformer trunk (bfloat16)
-        dit           — AlternateVLDiT diffusion action head (float16)
+        dit           — AlternateVLDiT diffusion action head (bfloat16)
         tokenizer     — GemmaTokenizer with VLA special tokens
 
     All components share a unified forward pass in get_action().
@@ -250,7 +250,7 @@ class GemmaVLA:
         image_size = getattr(eagle_config, "force_image_size", None) or eagle_config.vision_config.image_size
         image_token_index = eagle_config.image_token_index
 
-        # 3. Vision encoder (MLX, float16)
+        # 3. Vision encoder (MLX, bfloat16)
         print("[GemmaVLA] Building vision encoder...")
         from vision_mlx import build_vision_mlx
         vision_model = build_vision_mlx(state_dict, eagle_config)
@@ -267,7 +267,7 @@ class GemmaVLA:
         tokenizer = GemmaTokenizer.from_pretrained(eagle_repo, **tok_kwargs)
         print(f"  Tokenizer vocab={len(tokenizer)}")
 
-        # 5. DiT action head (MLX, float16)
+        # 5. DiT action head (MLX, bfloat16)
         print("[GemmaVLA] Building DiT action head...")
         from dit_mlx import build_dit_mlx
         dit, _ = build_dit_mlx(state_dict, cfg_path)
@@ -395,9 +395,9 @@ class GemmaVLA:
     def __repr__(self) -> str:
         return (
             f"GemmaVLA(\n"
-            f"  vision: SigLIP 27L float16\n"
+            f"  vision: SigLIP 27L bfloat16\n"
             f"  llm:    Gemma3 18L bfloat16\n"
-            f"  dit:    AlternateVLDiT 32L float16  steps={self.n_diffusion_steps}\n"
+            f"  dit:    AlternateVLDiT 32L bfloat16  steps={self.n_diffusion_steps}\n"
             f"  image_size={self.image_size}  max_state_dim={self._max_state_dim}\n"
             f")"
         )

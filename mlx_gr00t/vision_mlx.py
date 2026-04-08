@@ -203,7 +203,7 @@ class EagleVisionMLX(nn.Module):
         Returns:
             (B, num_img_tokens, mlp_out_dim)
         """
-        x = pixel_values.astype(mx.float16)
+        x = pixel_values.astype(mx.bfloat16)
         vit_embeds = self.encoder(x)
         vit_embeds = pixel_shuffle(vit_embeds, self.downsample_ratio)
         return self.mlp1(vit_embeds).astype(mx.float32)
@@ -315,7 +315,7 @@ def build_vision_mlx(state_dict, eagle_config):
 
     # Convert all parameters to float16 for 2x bandwidth savings
     import mlx.utils
-    params = mlx.utils.tree_map(lambda x: x.astype(mx.float16) if x.dtype == mx.float32 else x,
+    params = mlx.utils.tree_map(lambda x: x.astype(mx.bfloat16) if x.dtype == mx.float32 else x,
                                  model.parameters())
     model.load_weights(list(mlx.utils.tree_flatten(params)))
 
@@ -346,8 +346,9 @@ def build_vision_mlx_from_exported(safetensors_path: str, meta: dict):
     )
 
     weights = mx.load(safetensors_path)
+    weights = {k: v.astype(mx.bfloat16) if v.dtype == mx.float16 else v for k, v in weights.items()}
     model.load_weights(list(weights.items()))
 
     n_params = sum(v.size for _, v in mlx.utils.tree_flatten(model.parameters()))
-    print(f"  Vision loaded from exported: {n_params:,} params ({n_params * 2 / 1e9:.2f} GB float16)")
+    print(f"  Vision loaded from exported: {n_params:,} params ({n_params * 2 / 1e9:.2f} GB bfloat16)")
     return model

@@ -238,14 +238,22 @@ class GemmaRobotApp:
                  insertbackground=TEXT, relief="flat",
                  font=(FONT, 12), width=6).grid(row=0, column=5, padx=(0, 16))
 
+        tk.Label(cfg, text="Diff steps", bg=BG2, fg=TEXT_DIM,
+                 font=(FONT, 11)).grid(row=0, column=6, sticky="w", padx=(0, 6))
+        self._diff_var = tk.StringVar(value="4")
+        tk.Entry(cfg, textvariable=self._diff_var, bg=BG3, fg=TEXT,
+                 insertbackground=TEXT, relief="flat",
+                 font=(FONT, 12), width=3).grid(row=0, column=7, padx=(0, 16))
+
         tk.Label(cfg, text="Task", bg=BG2, fg=TEXT_DIM,
                  font=(FONT, 11)).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
         TASKS = [
             "simpler_env_google/google_robot_pick_coke_can",
-            "simpler_env_google/google_robot_move_near_v0",
+            "simpler_env_google/google_robot_pick_object",
+            "simpler_env_google/google_robot_move_near",
             "simpler_env_google/google_robot_open_drawer",
             "simpler_env_google/google_robot_close_drawer",
-            "simpler_env_google/google_robot_place_apple_in_closed_top_drawer",
+            "simpler_env_google/google_robot_place_in_closed_drawer",
         ]
         self._task_var = tk.StringVar(value=TASKS[0])
         task_menu = ttk.Combobox(cfg, textvariable=self._task_var, values=TASKS,
@@ -269,6 +277,33 @@ class GemmaRobotApp:
         sep2 = tk.Frame(self.root, bg=BG3, height=1)
         sep2.pack(fill="x")
 
+        # ---- log panel — packed BEFORE content so it anchors to bottom ----
+        sep3 = tk.Frame(self.root, bg=BG3, height=1)
+        sep3.pack(side="bottom", fill="x")
+
+        log_outer = tk.Frame(self.root, bg=BG, height=160)
+        log_outer.pack(side="bottom", fill="x", padx=16, pady=(4, 6))
+        log_outer.pack_propagate(False)
+
+        tk.Label(log_outer, text="LOG", bg=BG, fg=TEXT_DIM,
+                 font=(FONT, 9, "bold")).pack(anchor="w")
+
+        log_frame = tk.Frame(log_outer, bg=BG2)
+        log_frame.pack(fill="both", expand=True, pady=(2, 0))
+
+        self._log = tk.Text(log_frame, bg=BG2, fg=TEXT, font=("SF Mono", 10),
+                             relief="flat", state="disabled", wrap="word")
+        self._log.pack(side="left", fill="both", expand=True, padx=8, pady=6)
+
+        sb = ttk.Scrollbar(log_frame, command=self._log.yview)
+        sb.pack(side="right", fill="y")
+        self._log.config(yscrollcommand=sb.set)
+
+        self._log.tag_config("ok",  foreground=GREEN)
+        self._log.tag_config("err", foreground=RED)
+        self._log.tag_config("dim", foreground=TEXT_DIM)
+        self._log.tag_config("hi",  foreground=ACCENT)
+
         # ---- main content ----
         content = tk.Frame(self.root, bg=BG)
         content.pack(fill="both", expand=True, padx=16, pady=12)
@@ -282,7 +317,12 @@ class GemmaRobotApp:
 
         self._video_lbl = tk.Label(left, bg="#000000",
                                     width=480, height=360)
-        self._video_lbl.pack(pady=(4, 12))
+        self._video_lbl.pack(pady=(4, 4))
+
+        self._instr_var = tk.StringVar(value="")
+        tk.Label(left, textvariable=self._instr_var, bg=BG, fg=TEXT_DIM,
+                 font=(FONT, 10), wraplength=480, justify="left",
+                 anchor="w").pack(fill="x", padx=4, pady=(0, 8))
 
         # episode stats bar
         stats_bar = tk.Frame(left, bg=BG2, pady=8, padx=12)
@@ -293,7 +333,7 @@ class GemmaRobotApp:
         self._sr_lbl   = self._stat(stats_bar, "Success", "—", 2)
         self._inf_lbl  = self._stat(stats_bar, "Infer",   "—", 3)
 
-        # right: actions + log
+        # right: actions only
         right = tk.Frame(content, bg=BG)
         right.pack(side="left", fill="both", padx=(16, 0))
 
@@ -306,26 +346,6 @@ class GemmaRobotApp:
         self._action_bars = {}
         for i, k in enumerate(["x", "y", "z", "roll", "pitch", "yaw", "grip"]):
             self._action_bars[k] = self._action_row(self._action_frame, k, i)
-
-        tk.Label(right, text="LOG", bg=BG, fg=TEXT_DIM,
-                 font=(FONT, 9, "bold")).pack(anchor="w", pady=(16, 0))
-
-        log_frame = tk.Frame(right, bg=BG2)
-        log_frame.pack(fill="both", expand=True, pady=(4, 0))
-
-        self._log = tk.Text(log_frame, bg=BG2, fg=TEXT, font=("SF Mono", 10),
-                             relief="flat", state="disabled", wrap="word",
-                             width=34, height=14)
-        self._log.pack(side="left", fill="both", expand=True, padx=8, pady=8)
-
-        sb = ttk.Scrollbar(log_frame, command=self._log.yview)
-        sb.pack(side="right", fill="y")
-        self._log.config(yscrollcommand=sb.set)
-
-        self._log.tag_config("ok",  foreground=GREEN)
-        self._log.tag_config("err", foreground=RED)
-        self._log.tag_config("dim", foreground=TEXT_DIM)
-        self._log.tag_config("hi",  foreground=ACCENT)
 
     def _stat(self, parent, label, value, col):
         f = tk.Frame(parent, bg=BG2)
@@ -535,6 +555,7 @@ class GemmaRobotApp:
         seed   = int(self._seed_var.get() or 42)
         task   = self._task_var.get()
         n_steps = 8
+        n_diff  = int(self._diff_var.get() or 4)
 
         q(self._log_msg, f"Connecting to {url} …", "dim")
         q(self._set_status, "Connecting…", YELLOW)
@@ -548,7 +569,7 @@ class GemmaRobotApp:
         except Exception as e:
             q(self._log_msg, f"Connection failed: {e}", "err")
             q(self._set_status, "Disconnected", RED)
-            q(self._run_btn.config, text="▶  Run Eval", bg=ACCENT)
+            q(self._run_btn.config, text="▶  Run Eval", bg=ACCENT, state="normal")
             self._running = False
             return
 
@@ -657,12 +678,14 @@ class GemmaRobotApp:
 
                 ep_frames.append(img_arr.astype(np.uint8))
                 q(self._update_video, img_arr)
+                q(self._instr_var.set, instruction)
 
                 t0 = time.time()
                 raw = self._vla.get_action(
                     image=image,
                     robot_state=robot_state,
                     instruction=instruction,
+                    n_diffusion_steps=n_diff,
                 )
                 dt = time.time() - t0
 

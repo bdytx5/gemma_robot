@@ -7,7 +7,7 @@ Architecture:
   → AlternateVLDiT (32 layers) → action_decoder → predicted actions
 
 Optimizations:
-  - float16 compute throughout (halves memory bandwidth)
+  - bfloat16 compute throughout (halves memory bandwidth)
   - mx.compile() on DiT forward pass (kernel fusion)
   - Minimal mx.eval() calls (only final output)
 """
@@ -28,8 +28,8 @@ import numpy as np
 def timestep_sinusoidal(timesteps, dim=256, flip_sin_to_cos=True, downscale_freq_shift=1):
     """Matches diffusers Timesteps(num_channels=256, flip_sin_to_cos=True, downscale_freq_shift=1)."""
     half = dim // 2
-    exponent = -math.log(10000) * mx.arange(half, dtype=mx.float16) / (half - downscale_freq_shift)
-    emb = timesteps[:, None].astype(mx.float16) * mx.exp(exponent)[None, :]
+    exponent = -math.log(10000) * mx.arange(half, dtype=mx.bfloat16) / (half - downscale_freq_shift)
+    emb = timesteps[:, None].astype(mx.bfloat16) * mx.exp(exponent)[None, :]
     if flip_sin_to_cos:
         return mx.concatenate([mx.cos(emb), mx.sin(emb)], axis=-1)
     return mx.concatenate([mx.sin(emb), mx.cos(emb)], axis=-1)
@@ -39,8 +39,8 @@ def sinusoidal_pos_encoding(timesteps_2d, dim):
     """Matches SinusoidalPositionalEncoding in embodiment_conditioned_mlp.py.
     timesteps_2d: (B, T) → output: (B, T, dim)"""
     half = dim // 2
-    exponent = -mx.arange(half, dtype=mx.float16) * (math.log(10000.0) / half)
-    freqs = timesteps_2d[..., None].astype(mx.float16) * mx.exp(exponent)  # (B, T, half)
+    exponent = -mx.arange(half, dtype=mx.bfloat16) * (math.log(10000.0) / half)
+    freqs = timesteps_2d[..., None].astype(mx.bfloat16) * mx.exp(exponent)  # (B, T, half)
     return mx.concatenate([mx.sin(freqs), mx.cos(freqs)], axis=-1)
 
 
@@ -106,7 +106,7 @@ class Attention(nn.Module):
         # attention_mask: (B, S) bool, True = attend. Convert to additive for sdpa.
         mask = None
         if attention_mask is not None:
-            # (B, S) → (B, 1, 1, S), False positions get -1e4 (float16-safe)
+            # (B, S) → (B, 1, 1, S), False positions get -1e4 (bfloat16-safe)
             mask = mx.where(attention_mask[:, None, None, :],
                             mx.array(0, dtype=q.dtype),
                             mx.array(-1e4, dtype=q.dtype))
@@ -221,8 +221,8 @@ class AlternateVLDiT(nn.Module):
 class CategorySpecificLinear(nn.Module):
     def __init__(self, num_categories, input_dim, hidden_dim):
         super().__init__()
-        self.W = mx.zeros((num_categories, input_dim, hidden_dim), dtype=mx.float16)
-        self.b = mx.zeros((num_categories, hidden_dim), dtype=mx.float16)
+        self.W = mx.zeros((num_categories, input_dim, hidden_dim), dtype=mx.bfloat16)
+        self.b = mx.zeros((num_categories, hidden_dim), dtype=mx.bfloat16)
 
     def __call__(self, x, cat_ids):
         # x: (B, T, in), cat_ids: (B,)
@@ -359,9 +359,9 @@ class Gr00tActionHeadMLX(nn.Module):
         Returns:
             action_pred: (B, action_horizon, action_dim)
         """
-        # Cast inputs to float16 — all internals are float16 too (no casting overhead)
-        backbone_features = backbone_features.astype(mx.float16)
-        state = state.astype(mx.float16)
+        # Cast inputs to bfloat16 — all internals are bfloat16 too (no casting overhead)
+        backbone_features = backbone_features.astype(mx.bfloat16)
+        state = state.astype(mx.bfloat16)
 
         # Project backbone features
         if self.backbone_proj is not None:
@@ -376,13 +376,13 @@ class Gr00tActionHeadMLX(nn.Module):
 
         # Initial noise
         B = vl_embeds.shape[0]
-        actions = mx.random.normal((B, self.action_horizon, self.action_dim)).astype(mx.float16)
+        actions = mx.random.normal((B, self.action_horizon, self.action_dim)).astype(mx.bfloat16)
         dt = 1.0 / self.num_inference_timesteps
 
         # Pre-compute position embedding once
         pos_emb = None
         if self.add_pos_embed:
-            pos_emb = self.position_embedding(mx.arange(self.action_horizon))  # already float16 from weights
+            pos_emb = self.position_embedding(mx.arange(self.action_horizon))  # already bfloat16 from weights
 
         for t in range(self.num_inference_timesteps):
             t_cont = t / float(self.num_inference_timesteps)
@@ -493,17 +493,17 @@ def build_dit_mlx(state_dict: dict, config_path: str):
     # Convert and load
     mlx_weights = convert_torch_to_mlx(ah_sd)
 
-    # Load into model and convert to float16
+    # Load into model and convert to bfloat16
     model.load_weights(list(mlx_weights.items()))
 
-    # Convert all parameters to float16 for 2x bandwidth savings
+    # Convert all parameters to bfloat16 for 2x bandwidth savings
     import mlx.utils
-    params = mlx.utils.tree_map(lambda x: x.astype(mx.float16) if x.dtype == mx.float32 else x,
+    params = mlx.utils.tree_map(lambda x: x.astype(mx.bfloat16) if x.dtype == mx.float32 else x,
                                  model.parameters())
     model.load_weights(list(mlx.utils.tree_flatten(params)))
 
     n_params = sum(v.size for _, v in mlx.utils.tree_flatten(model.parameters()))
-    print(f"  MLX DiT loaded: {n_params:,} parameters ({n_params * 2 / 1e9:.2f} GB float16)")
+    print(f"  MLX DiT loaded: {n_params:,} parameters ({n_params * 2 / 1e9:.2f} GB bfloat16)")
 
     return model, config
 
@@ -517,8 +517,9 @@ def build_dit_mlx_from_exported(safetensors_path: str, config_path: str):
 
     model = Gr00tActionHeadMLX(config)
     weights = mx.load(safetensors_path)
+    weights = {k: v.astype(mx.bfloat16) if v.dtype == mx.float16 else v for k, v in weights.items()}
     model.load_weights(list(weights.items()))
 
     n_params = sum(v.size for _, v in mlx.utils.tree_flatten(model.parameters()))
-    print(f"  DiT loaded from exported: {n_params:,} params ({n_params * 2 / 1e9:.2f} GB float16)")
+    print(f"  DiT loaded from exported: {n_params:,} params ({n_params * 2 / 1e9:.2f} GB bfloat16)")
     return model, config
