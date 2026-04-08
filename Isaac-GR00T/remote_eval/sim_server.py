@@ -182,6 +182,19 @@ async def step(request: Request):
     })
 
 
+def _batch_obs(obs: dict) -> dict:
+    """Add batch dim (B=1) to obs arrays so Gr00tSimPolicyWrapper sees (B, T, H, W, C)."""
+    batched = {}
+    for k, v in obs.items():
+        if isinstance(v, np.ndarray):
+            batched[k] = v[np.newaxis]   # (T,...) → (1, T, ...)
+        elif isinstance(v, str):
+            batched[k] = (v,)            # str → tuple[str] with B=1
+        else:
+            batched[k] = v
+    return batched
+
+
 @app.post("/predict")
 async def predict(request: Request):
     """Forward obs to gr00t ZMQ policy server, return action for MLX delta comparison."""
@@ -189,7 +202,7 @@ async def predict(request: Request):
         return msgpack_response({"error": "no policy server — start with --policy_host/--policy_port"})
 
     body = unpack(await request.body())
-    obs = body["obs"]
+    obs = _batch_obs(body["obs"])
 
     action = _policy_client.get_action(obs)
     return msgpack_response({"action": _to_serializable(action)})
