@@ -127,9 +127,15 @@ class GemmaVLA:
         from safetensors.torch import load_file
         import glob
 
-        # 0. Load action normalization stats
+        # 0. Load action normalization stats (prefer checkpoint-specific stats if they exist)
         print("[GemmaVLA] Loading action norm stats...")
-        stats_path = hf_hub_download(gr00t_repo, "statistics.json", token=hf_token)
+        stats_name = f"{checkpoint}/statistics.json" if checkpoint else "statistics.json"
+        try:
+            stats_path = hf_hub_download(gr00t_repo, stats_name, token=hf_token)
+            print(f"  Using checkpoint stats: {stats_name}")
+        except Exception:
+            stats_path = hf_hub_download(gr00t_repo, "statistics.json", token=hf_token)
+            print(f"  Using root stats: statistics.json")
         with open(stats_path) as f:
             all_stats = json.load(f)
         action_norm_stats = all_stats.get("oxe_google", None)
