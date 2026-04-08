@@ -88,6 +88,13 @@ class SimClient:
         r.raise_for_status()
         return unpack(r.content)
 
+    def predict(self, obs: dict):
+        """Get CUDA model action from server for delta comparison."""
+        r = requests.post(f"{self.base}/predict", data=pack({"obs": obs}),
+                          headers=HEADERS, timeout=self.timeout)
+        r.raise_for_status()
+        return unpack(r.content)
+
 
 # ── obs parsing ───────────────────────────────────────────────────────────────
 STATE_KEYS = ["state.x", "state.y", "state.z",
@@ -161,6 +168,7 @@ def run_eval(
     video_dir: str | None,
     weave_project: str,
     video_fps: int,
+    cuda_delta: bool,
 ):
     weave.init(weave_project)
 
@@ -227,6 +235,19 @@ def run_eval(
                                          instruction=instruction)
             dt_infer = (time.time() - t_infer) * 1000
 
+            # Optionally fetch CUDA action from server and print deltas
+            cuda_acts = None
+            if cuda_delta:
+                try:
+                    cuda_result = client.predict(obs)
+                    if "action" in cuda_result:
+                        cuda_act_dict = cuda_result["action"]
+                        cuda_acts = np.stack(
+                            [np.asarray(cuda_act_dict[k]).flatten() for k in ACTION_KEYS], axis=-1
+                        )  # (n_action_steps, 7)
+                except Exception as e:
+                    print(f"\n  [cuda_delta] error: {e}")
+
             # Print actions every 8 steps so we can sanity-check
             if step_count % 8 == 0:
                 acts = raw_actions[0, :n_action_steps]   # (n_action_steps, 7)
@@ -234,6 +255,12 @@ def run_eval(
                 print(f"\n  [actions @ step {step_count}]  shape={acts.shape}")
                 for i, lbl in enumerate(labels):
                     print(f"    {lbl:5s}: {acts[:, i]}")
+                if cuda_acts is not None:
+                    delta = acts - cuda_acts[:n_action_steps]
+                    print(f"\n  [cuda_delta @ step {step_count}]  (mlx - cuda)")
+                    for i, lbl in enumerate(labels):
+                        mae = np.abs(delta[:, i]).mean()
+                        print(f"    {lbl:5s}: {delta[:, i]}  mae={mae:.4f}")
 
             action = format_action(raw_actions, n_action_steps)
             result = client.step(action)
@@ -305,6 +332,8 @@ if __name__ == "__main__":
                         help="W&B Weave project name")
     parser.add_argument("--video_fps", type=int, default=10,
                         help="FPS for episode videos logged to Weave")
+    parser.add_argument("--cuda_delta", action="store_true",
+                        help="Call /predict on server each step to compare CUDA vs MLX actions")
     args = parser.parse_args()
 
     run_eval(
@@ -323,4 +352,5 @@ if __name__ == "__main__":
         video_dir=args.video_dir,
         weave_project=args.weave_project,
         video_fps=args.video_fps,
+        cuda_delta=args.cuda_delta,
     )
