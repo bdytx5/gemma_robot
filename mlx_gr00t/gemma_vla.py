@@ -68,29 +68,29 @@ class GemmaVLA:
         # State: min-max norm  → normalized = (raw - q01) / (q99 - q01) * 2 - 1
         # Action x/y/z/roll/pitch/yaw: mean/std norm → raw = model_out * std + mean
         # Action gripper: min-max norm → raw = (model_out + 1) / 2 * (q99 - q01) + q01
-        self._state_q01 = None
-        self._state_q99 = None
+        self._state_min = None
+        self._state_max = None
         self._action_mean = None
         self._action_std = None
-        self._action_grip_q01 = None
-        self._action_grip_q99 = None
+        self._action_grip_min = None
+        self._action_grip_max = None
 
         if action_norm_stats:
             all_stats = action_norm_stats   # keys: "state", "action"
             s = all_stats.get("state", {})
             a = all_stats.get("action", {})
 
-            # State norm (8 dims: x y z rx ry rz rw gripper)
+            # State norm: min/max → [-1, 1]  (stock uses min/max, NOT q01/q99)
             state_keys = ["x", "y", "z", "rx", "ry", "rz", "rw", "gripper"]
-            self._state_q01 = np.array([s[k]["q01"][0] for k in state_keys], dtype=np.float32)
-            self._state_q99 = np.array([s[k]["q99"][0] for k in state_keys], dtype=np.float32)
+            self._state_min = np.array([s[k]["min"][0] for k in state_keys], dtype=np.float32)
+            self._state_max = np.array([s[k]["max"][0] for k in state_keys], dtype=np.float32)
 
-            # Action denorm — x/y/z/roll/pitch/yaw: mean/std; gripper: min-max
+            # Action denorm — x/y/z/roll/pitch/yaw: mean/std; gripper: min/max
             ms_keys = ["x", "y", "z", "roll", "pitch", "yaw"]
             self._action_mean = np.array([a[k]["mean"][0] for k in ms_keys], dtype=np.float32)
             self._action_std  = np.array([a[k]["std"][0]  for k in ms_keys], dtype=np.float32)
-            self._action_grip_q01 = np.float32(a["gripper"]["q01"][0])
-            self._action_grip_q99 = np.float32(a["gripper"]["q99"][0])
+            self._action_grip_min = np.float32(a["gripper"]["min"][0])
+            self._action_grip_max = np.float32(a["gripper"]["max"][0])
             print(f"  Norm stats loaded: state {len(state_keys)}D, action {len(ms_keys)+1}D")
 
     # ------------------------------------------------------------------
@@ -284,10 +284,10 @@ class GemmaVLA:
 
         # Normalize state before feeding to DiT (min-max → [-1, 1])
         norm_state = robot_state.copy()
-        if self._state_q01 is not None:
-            d = len(self._state_q01)
-            rng = np.maximum(self._state_q99 - self._state_q01, 1e-8)
-            norm_state[:d] = (robot_state[:d] - self._state_q01) / rng * 2.0 - 1.0
+        if self._state_min is not None:
+            d = len(self._state_min)
+            rng = np.maximum(self._state_max - self._state_min, 1e-8)
+            norm_state[:d] = (robot_state[:d] - self._state_min) / rng * 2.0 - 1.0
 
         padded_state = np.zeros(self._max_state_dim, dtype=np.float32)
         padded_state[:norm_state.shape[0]] = norm_state
@@ -312,8 +312,8 @@ class GemmaVLA:
             grip = np.clip(actions_np[..., n_ms], -1.0, 1.0)
             actions_np[..., n_ms] = (
                 (grip + 1.0) / 2.0
-                * (self._action_grip_q99 - self._action_grip_q01)
-                + self._action_grip_q01
+                * (self._action_grip_max - self._action_grip_min)
+                + self._action_grip_min
             )
 
         return actions_np
