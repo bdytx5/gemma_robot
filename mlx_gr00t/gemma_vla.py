@@ -98,6 +98,76 @@ class GemmaVLA:
     # ------------------------------------------------------------------
 
     @classmethod
+    def from_exported(
+        cls,
+        weights_dir: str,
+        mlx_llm_path: str,
+        n_diffusion_steps: int = 4,
+    ) -> "GemmaVLA":
+        """
+        Fast load from pre-exported MLX weights (output of export_weights.py).
+        No PyTorch / HuggingFace download needed at runtime.
+
+        Args:
+            weights_dir:   Path to gr00t_weights_mlx/ directory
+            mlx_llm_path:  Path to gr00t_llm_mlx/ directory
+        """
+        for p in [EAGLE_PATH, ISAAC_PATH]:
+            if p not in sys.path:
+                sys.path.insert(0, p)
+
+        weights_dir = Path(weights_dir)
+
+        # meta + stats
+        with open(weights_dir / "meta.json") as f:
+            meta = json.load(f)
+        with open(weights_dir / "statistics.json") as f:
+            all_stats = json.load(f)
+        action_norm_stats = all_stats.get("oxe_google")
+
+        image_size        = meta["image_size"]
+        image_token_index = meta["image_token_index"]
+        dit_config        = meta
+
+        # Vision
+        print("[GemmaVLA] Loading vision model from exported weights...")
+        from vision_mlx import build_vision_mlx_from_exported
+        vision_model = build_vision_mlx_from_exported(
+            str(weights_dir / "vision.safetensors"), meta
+        )
+
+        # LLM
+        print("[GemmaVLA] Loading Gemma3 LLM...")
+        from mlx_lm import load as mlx_load
+        from transformers import GemmaTokenizer
+        llm, _ = mlx_load(mlx_llm_path)
+        llm.eval()
+        tokenizer = GemmaTokenizer.from_pretrained(
+            str(weights_dir / "eagle_tokenizer"), use_fast=False, local_files_only=True
+        )
+        print(f"  Tokenizer vocab={len(tokenizer)}")
+
+        # DiT
+        print("[GemmaVLA] Loading DiT action head from exported weights...")
+        from dit_mlx import build_dit_mlx_from_exported
+        dit, _ = build_dit_mlx_from_exported(
+            str(weights_dir / "dit.safetensors"),
+            str(weights_dir / "config.json"),
+        )
+
+        return cls(
+            vision_model=vision_model,
+            llm=llm,
+            tokenizer=tokenizer,
+            dit=dit,
+            dit_config=dit_config,
+            image_token_index=image_token_index,
+            image_size=image_size,
+            n_diffusion_steps=n_diffusion_steps,
+            action_norm_stats=action_norm_stats,
+        )
+
+    @classmethod
     def from_pretrained(
         cls,
         gr00t_repo: str,

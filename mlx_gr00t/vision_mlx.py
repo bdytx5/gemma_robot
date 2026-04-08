@@ -323,3 +323,31 @@ def build_vision_mlx(state_dict, eagle_config):
     print(f"  MLX vision loaded: {n_params:,} parameters ({n_params * 2 / 1e9:.2f} GB float16)")
 
     return model
+
+
+def build_vision_mlx_from_exported(safetensors_path: str, meta: dict):
+    """Load vision model from pre-exported MLX safetensors (no PyTorch needed)."""
+    import mlx.utils
+
+    hidden_size      = 1152
+    num_heads        = 16
+    intermediate     = 4304
+    num_layers       = 27
+    image_size       = meta["image_size"]
+    patch_size       = 14
+    downsample_ratio = 0.5
+    mlp_out          = 640
+
+    model = EagleVisionMLX(
+        hidden_size=hidden_size, num_heads=num_heads,
+        intermediate_size=intermediate, num_layers=num_layers,
+        image_size=image_size, patch_size=patch_size,
+        downsample_ratio=downsample_ratio, mlp_out_dim=mlp_out,
+    )
+
+    weights = mx.load(safetensors_path)
+    model.load_weights(list(weights.items()))
+
+    n_params = sum(v.size for _, v in mlx.utils.tree_flatten(model.parameters()))
+    print(f"  Vision loaded from exported: {n_params:,} params ({n_params * 2 / 1e9:.2f} GB float16)")
+    return model

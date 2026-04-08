@@ -506,3 +506,19 @@ def build_dit_mlx(state_dict: dict, config_path: str):
     print(f"  MLX DiT loaded: {n_params:,} parameters ({n_params * 2 / 1e9:.2f} GB float16)")
 
     return model, config
+
+
+def build_dit_mlx_from_exported(safetensors_path: str, config_path: str):
+    """Load DiT from pre-exported MLX safetensors (no PyTorch needed)."""
+    import mlx.utils
+
+    with open(config_path) as f:
+        config = json.load(f)
+
+    model = Gr00tActionHeadMLX(config)
+    weights = mx.load(safetensors_path)
+    model.load_weights(list(weights.items()))
+
+    n_params = sum(v.size for _, v in mlx.utils.tree_flatten(model.parameters()))
+    print(f"  DiT loaded from exported: {n_params:,} params ({n_params * 2 / 1e9:.2f} GB float16)")
+    return model, config
