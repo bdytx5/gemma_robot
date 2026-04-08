@@ -134,9 +134,10 @@ if [ -z "$PYTHON" ]; then
     log "Installing dependencies..."
     "$ENV_DIR/bin/pip" install --upgrade pip
     "$ENV_DIR/bin/pip" install mlx mlx-lm \
-        transformers==4.49.0 \
+        "transformers>=4.51.0,<5.0" \
         safetensors huggingface_hub \
-        Pillow numpy requests msgpack
+        Pillow numpy requests msgpack tokenizers \
+        wandb weave moviepy
 
     PYTHON="$ENV_DIR/bin/python"
 fi

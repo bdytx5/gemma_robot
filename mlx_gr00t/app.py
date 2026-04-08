@@ -16,6 +16,7 @@ import queue
 import time
 import io
 import json
+import tempfile
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, font as tkfont
@@ -129,6 +130,29 @@ def format_action(actions, n_action_steps):
     return {key: acts[:, i:i+1] for i, key in enumerate(ACTION_KEYS)}
 
 
+# ── stdout/stderr → log panel redirect ───────────────────────────────────────
+class _StreamRedirect:
+    def __init__(self, app, tag):
+        self._app = app
+        self._tag = tag
+        self._buf = ""
+
+    def write(self, text):
+        self._buf += text
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            if line:
+                self._app._log_msg(line, self._tag)
+
+    def flush(self):
+        if self._buf:
+            self._app._log_msg(self._buf, self._tag)
+            self._buf = ""
+
+    def isatty(self):
+        return False
+
+
 # ── main app ──────────────────────────────────────────────────────────────────
 class GemmaRobotApp:
     def __init__(self, root):
@@ -142,9 +166,14 @@ class GemmaRobotApp:
         self._stop_event = threading.Event()
         self._vla = None
         self._running = False
+        self._eval_thread_ref = None
 
         self._build_ui()
         self.root.after(50, self._drain_queue)
+
+        # redirect stdout/stderr → log panel
+        sys.stdout = _StreamRedirect(self, "")
+        sys.stderr = _StreamRedirect(self, "err")
 
     # ── UI construction ───────────────────────────────────────────────────────
 
@@ -195,6 +224,20 @@ class GemmaRobotApp:
                  insertbackground=TEXT, relief="flat",
                  font=(FONT, 12), width=6).grid(row=0, column=5, padx=(0, 16))
 
+        tk.Label(cfg, text="Task", bg=BG2, fg=TEXT_DIM,
+                 font=(FONT, 11)).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        TASKS = [
+            "simpler_env_google/google_robot_pick_coke_can",
+            "simpler_env_google/google_robot_move_near_v0",
+            "simpler_env_google/google_robot_open_drawer",
+            "simpler_env_google/google_robot_close_drawer",
+            "simpler_env_google/google_robot_place_apple_in_closed_top_drawer",
+        ]
+        self._task_var = tk.StringVar(value=TASKS[0])
+        task_menu = ttk.Combobox(cfg, textvariable=self._task_var, values=TASKS,
+                                  font=(FONT, 11), width=52, state="readonly")
+        task_menu.grid(row=1, column=1, columnspan=5, sticky="w", pady=(8, 0))
+
         self._run_btn = tk.Button(cfg, text="▶  Run Eval", bg=ACCENT,
                                    fg="#000000", font=(FONT, 12, "bold"),
                                    relief="flat", padx=16, pady=4,
@@ -237,8 +280,8 @@ class GemmaRobotApp:
         self._inf_lbl  = self._stat(stats_bar, "Infer",   "—", 3)
 
         # right: actions + log
-        right = tk.Frame(content, bg=BG, padx=(16, 0))
-        right.pack(side="left", fill="both")
+        right = tk.Frame(content, bg=BG)
+        right.pack(side="left", fill="both", padx=(16, 0))
 
         tk.Label(right, text="PREDICTED ACTIONS", bg=BG, fg=TEXT_DIM,
                  font=(FONT, 9, "bold")).pack(anchor="w")
@@ -415,19 +458,20 @@ class GemmaRobotApp:
             done(False)
             return
 
-        packages = [
-            "mlx", "mlx-lm",
-            "transformers==4.49.0",
-            "safetensors", "huggingface_hub",
-            "Pillow", "numpy", "requests", "msgpack",
-            "tokenizers",
-        ]
+        req_file = HERE / "requirements.txt"
+        if req_file.exists():
+            q(self._log_msg, f"Installing from requirements.txt…", "dim")
+            install_cmd = [pip, "install", "-r", str(req_file)]
+        else:
+            packages = [
+                "mlx", "mlx-lm", "transformers>=4.51.0,<5.0",
+                "safetensors", "huggingface_hub", "Pillow", "numpy",
+                "requests", "msgpack", "tokenizers", "wandb", "weave", "moviepy",
+            ]
+            q(self._log_msg, f"Installing {len(packages)} packages…", "dim")
+            install_cmd = [pip, "install"] + packages
 
-        q(self._log_msg, f"Installing {len(packages)} packages…", "dim")
-        r = subprocess.run(
-            [pip, "install", "--upgrade"] + packages,
-            capture_output=True, text=True
-        )
+        r = subprocess.run(install_cmd, capture_output=True, text=True)
         if r.returncode != 0:
             q(self._log_msg, f"Install failed:\n{r.stderr[-400:]}", "err")
             done(False)
@@ -444,14 +488,24 @@ class GemmaRobotApp:
     def _on_run_stop(self):
         if self._running:
             self._stop_event.set()
-            self._run_btn.config(text="▶  Run Eval", bg=ACCENT)
             self._running = False
+            self._run_btn.config(text="⏳  Stopping…", bg=BG3, state="disabled")
+            # poll until the eval thread fully exits, then re-enable
+            self.root.after(200, self._poll_thread_done)
         else:
             self._stop_event.clear()
             self._running = True
             self._run_btn.config(text="■  Stop", bg=RED)
             t = threading.Thread(target=self._eval_thread, daemon=True)
             t.start()
+            self._eval_thread_ref = t
+
+    def _poll_thread_done(self):
+        t = self._eval_thread_ref
+        if t and t.is_alive():
+            self.root.after(200, self._poll_thread_done)
+        else:
+            self._run_btn.config(text="▶  Run Eval", bg=ACCENT, state="normal")
 
     # ── eval thread ───────────────────────────────────────────────────────────
 
@@ -461,6 +515,7 @@ class GemmaRobotApp:
         url    = self._url_var.get().strip()
         n_eps  = int(self._ep_var.get() or 5)
         seed   = int(self._seed_var.get() or 42)
+        task   = self._task_var.get()
         n_steps = 8
 
         q(self._log_msg, f"Connecting to {url} …", "dim")
@@ -524,6 +579,34 @@ class GemmaRobotApp:
                 self._running = False
                 return
 
+        # ── weave init ────────────────────────────────────────────────────────
+        weave_log_ep = None
+        try:
+            api_key = os.environ.get("WANDB_API_KEY", "")
+            if not api_key:
+                q(self._log_msg, "WANDB_API_KEY not set — skipping weave logging", "dim")
+            else:
+                import weave as _weave
+                _weave.init("gemma-robot")
+
+                @_weave.op
+                def _log_ep(ep, seed, instruction, success, steps, elapsed_s, video_path):
+                    try:
+                        from moviepy.editor import VideoFileClip
+                    except ImportError:
+                        from moviepy import VideoFileClip
+                    return {
+                        "episode": ep, "seed": seed, "instruction": instruction,
+                        "success": success, "steps": steps, "elapsed_s": round(elapsed_s, 2),
+                        "video": VideoFileClip(video_path),
+                    }
+
+                weave_log_ep = _log_ep
+                q(self._log_msg, "Weave logging → gemma-robot", "ok")
+        except Exception as e:
+            q(self._log_msg, f"Weave init failed: {e}", "dim")
+            weave_log_ep = None
+
         successes = []
 
         for ep in range(n_eps):
@@ -536,7 +619,7 @@ class GemmaRobotApp:
 
             try:
                 result = client.reset(
-                    env_name="simpler_env_google/google_robot_pick_coke_can",
+                    env_name=task,
                     seed=ep_seed,
                     max_episode_steps=504,
                     n_action_steps=n_steps,
@@ -549,10 +632,12 @@ class GemmaRobotApp:
             done = False
             success = False
             step = 0
+            ep_frames = []
 
             while not done and not self._stop_event.is_set():
                 image, robot_state, instruction, img_arr = obs_to_inputs(obs)
 
+                ep_frames.append(img_arr.astype(np.uint8))
                 q(self._update_video, img_arr)
 
                 t0 = time.time()
@@ -588,10 +673,39 @@ class GemmaRobotApp:
               f"  done  steps={step}  success={success}  sr={sr:.0%}", color)
             q(self._sr_lbl.config, text=f"{sr:.0%}")
 
+            # ── log video to weave ────────────────────────────────────────────
+            if weave_log_ep and ep_frames:
+                try:
+                    from moviepy.editor import ImageSequenceClip
+                except ImportError:
+                    try:
+                        from moviepy import ImageSequenceClip
+                    except Exception:
+                        ImageSequenceClip = None
+                if weave_log_ep and ImageSequenceClip is not None:
+                    try:
+                        video_path = f"/tmp/gr00t_ep{ep+1}_seed{ep_seed}.mp4"
+                        ImageSequenceClip(list(ep_frames), fps=10).write_videofile(
+                            video_path, logger=None
+                        )
+                        weave_log_ep(
+                            ep=ep + 1, seed=ep_seed, instruction=instruction,
+                            success=success, steps=step, elapsed_s=0.0,
+                            video_path=video_path,
+                        )
+                        q(self._log_msg, "  → logged to weave", "dim")
+                    except Exception as e:
+                        q(self._log_msg, f"  weave log failed: {e}", "dim")
+
         q(self._log_msg, "\nEval complete.", "hi")
         q(self._set_status, "Done", GREEN)
-        q(self._run_btn.config, text="▶  Run Eval", bg=ACCENT)
         self._running = False
+        # flush all pending Metal GPU work before the thread exits
+        try:
+            import mlx.core as mx
+            mx.synchronize()
+        except Exception:
+            pass
 
     # ── queue drain ───────────────────────────────────────────────────────────
 
