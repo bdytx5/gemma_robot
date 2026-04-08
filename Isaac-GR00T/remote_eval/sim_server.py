@@ -207,7 +207,7 @@ async def predict(request: Request):
     body = unpack(await request.body())
     obs = _batch_obs(body["obs"])
 
-    action = _policy_client.get_action(obs)
+    action, _ = _policy_client.get_action(obs)   # returns (action_dict, info)
     return msgpack_response({"action": _to_serializable(action)})
 
 
