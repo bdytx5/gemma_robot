@@ -256,7 +256,8 @@ def run_eval(
                 for i, lbl in enumerate(labels):
                     print(f"    {lbl:5s}: {acts[:, i]}")
                 if cuda_acts is not None:
-                    delta = acts - cuda_acts[:n_action_steps]
+                    mlx_7 = acts[:, :7]   # MLX outputs 128 dims; first 7 are the actions
+                    delta = mlx_7 - cuda_acts[:n_action_steps]
                     print(f"\n  [cuda_delta @ step {step_count}]  (mlx - cuda)")
                     for i, lbl in enumerate(labels):
                         mae = np.abs(delta[:, i]).mean()
