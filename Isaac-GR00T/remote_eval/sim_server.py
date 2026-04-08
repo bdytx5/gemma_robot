@@ -6,9 +6,8 @@ can drive the eval loop over ngrok.
 
 Usage:
     cd Isaac-GR00T
-    SIMPLER_PYTHON=gr00t/eval/sim/SimplerEnv/simpler_uv/.venv/bin/python
     PYTHONPATH=. VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json \
-        $SIMPLER_PYTHON remote_eval/sim_server.py \
+        .venv/bin/python remote_eval/sim_server.py \
         --env_name simpler_env_google/google_robot_pick_coke_can \
         --port 8080 --seed 42
 
@@ -32,10 +31,15 @@ from fastapi import FastAPI, Request, Response
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXTERNAL = REPO_ROOT / "external_dependencies/SimplerEnv"
 MANISKILL = EXTERNAL / "ManiSkill2_real2sim"
+SIMPLER_SITE = REPO_ROOT / "gr00t/eval/sim/SimplerEnv/simpler_uv/.venv/lib/python3.10/site-packages"
 
+# Prepend repo/sim paths so gr00t takes priority; append simpler_uv site-packages
+# last so simpler_env is found without shadowing main-venv packages (e.g. transformers)
 for p in [str(EXTERNAL), str(MANISKILL), str(REPO_ROOT)]:
     if p not in sys.path:
         sys.path.insert(0, p)
+if str(SIMPLER_SITE) not in sys.path:
+    sys.path.append(str(SIMPLER_SITE))
 
 os.environ.setdefault("VK_ICD_FILENAMES", "/usr/share/vulkan/icd.d/nvidia_icd.json")
 
@@ -66,24 +70,15 @@ app = FastAPI()
 _env = None
 _episode_steps = 0
 _max_steps = 504
-_cuda_policy = None   # optional CUDA GR00T model for server-side inference
+_policy_client = None   # ZMQ PolicyClient connecting to gr00t inference server
 
 
-def _load_cuda_policy(model_path: str):
-    global _cuda_policy
-    if not model_path:
-        return
-    print(f"[sim_server] Loading CUDA policy from {model_path} ...")
-    from gr00t.policy.gr00t_policy import Gr00tPolicy, Gr00tSimPolicyWrapper
-    from gr00t.data.embodiment_tags import EmbodimentTag
-    _cuda_policy = Gr00tSimPolicyWrapper(
-        Gr00tPolicy(
-            embodiment_tag=EmbodimentTag.OXE_GOOGLE,
-            model_path=model_path,
-            device=0,
-        )
-    )
-    print("[sim_server] CUDA policy loaded.")
+def _connect_policy_client(host: str, port: int):
+    global _policy_client
+    print(f"[sim_server] Connecting to gr00t policy server at {host}:{port} ...")
+    from gr00t.policy.server_client import PolicyClient
+    _policy_client = PolicyClient(host=host, port=port)
+    print("[sim_server] Policy client connected.")
 
 
 def _build_env(env_name: str, seed: int, max_episode_steps: int, n_action_steps: int,
@@ -189,14 +184,14 @@ async def step(request: Request):
 
 @app.post("/predict")
 async def predict(request: Request):
-    """Run CUDA inference on the server. Returns predicted action for delta comparison."""
-    if _cuda_policy is None:
-        return msgpack_response({"error": "no model loaded — start server with --model_path"})
+    """Forward obs to gr00t ZMQ policy server, return action for MLX delta comparison."""
+    if _policy_client is None:
+        return msgpack_response({"error": "no policy server — start with --policy_host/--policy_port"})
 
     body = unpack(await request.body())
-    obs = body["obs"]  # obs dict with numpy arrays
+    obs = body["obs"]
 
-    action = _cuda_policy.get_action(obs)
+    action = _policy_client.get_action(obs)
     return msgpack_response({"action": _to_serializable(action)})
 
 
@@ -211,12 +206,16 @@ if __name__ == "__main__":
     parser.add_argument("--max_episode_steps", type=int, default=504)
     parser.add_argument("--n_action_steps", type=int, default=8)
     parser.add_argument("--video_dir", default=None)
-    parser.add_argument("--model_path", default="",
-                        help="Optional: HuggingFace model path or local checkpoint for CUDA inference. "
+    parser.add_argument("--policy_host", default="localhost",
+                        help="Host of the gr00t ZMQ policy server (default: localhost)")
+    parser.add_argument("--policy_port", type=int, default=5556,
+                        help="Port of the gr00t ZMQ policy server (default: 5556). "
                              "Enables /predict endpoint for MLX vs CUDA action delta comparison.")
+    parser.add_argument("--no_policy", action="store_true",
+                        help="Skip connecting to policy server (sim-only mode)")
     _args = parser.parse_args()
 
     print(f"[sim_server] env={_args.env_name}  port={_args.port}  seed={_args.seed}")
-    if _args.model_path:
-        _load_cuda_policy(_args.model_path)
+    if not _args.no_policy:
+        _connect_policy_client(_args.policy_host, _args.policy_port)
     uvicorn.run(app, host="0.0.0.0", port=_args.port)
