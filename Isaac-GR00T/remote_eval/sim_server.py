@@ -66,6 +66,24 @@ app = FastAPI()
 _env = None
 _episode_steps = 0
 _max_steps = 504
+_cuda_policy = None   # optional CUDA GR00T model for server-side inference
+
+
+def _load_cuda_policy(model_path: str):
+    global _cuda_policy
+    if not model_path:
+        return
+    print(f"[sim_server] Loading CUDA policy from {model_path} ...")
+    from gr00t.policy.gr00t_policy import Gr00tPolicy, Gr00tSimPolicyWrapper
+    from gr00t.data.embodiment_tags import EmbodimentTag
+    _cuda_policy = Gr00tSimPolicyWrapper(
+        Gr00tPolicy(
+            embodiment_tag=EmbodimentTag.OXE_GOOGLE,
+            model_path=model_path,
+            device=0,
+        )
+    )
+    print("[sim_server] CUDA policy loaded.")
 
 
 def _build_env(env_name: str, seed: int, max_episode_steps: int, n_action_steps: int,
@@ -169,6 +187,19 @@ async def step(request: Request):
     })
 
 
+@app.post("/predict")
+async def predict(request: Request):
+    """Run CUDA inference on the server. Returns predicted action for delta comparison."""
+    if _cuda_policy is None:
+        return msgpack_response({"error": "no model loaded — start server with --model_path"})
+
+    body = unpack(await request.body())
+    obs = body["obs"]  # obs dict with numpy arrays
+
+    action = _cuda_policy.get_action(obs)
+    return msgpack_response({"action": _to_serializable(action)})
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 _args = None
 
@@ -180,7 +211,12 @@ if __name__ == "__main__":
     parser.add_argument("--max_episode_steps", type=int, default=504)
     parser.add_argument("--n_action_steps", type=int, default=8)
     parser.add_argument("--video_dir", default=None)
+    parser.add_argument("--model_path", default="",
+                        help="Optional: HuggingFace model path or local checkpoint for CUDA inference. "
+                             "Enables /predict endpoint for MLX vs CUDA action delta comparison.")
     _args = parser.parse_args()
 
     print(f"[sim_server] env={_args.env_name}  port={_args.port}  seed={_args.seed}")
+    if _args.model_path:
+        _load_cuda_policy(_args.model_path)
     uvicorn.run(app, host="0.0.0.0", port=_args.port)
