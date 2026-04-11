@@ -139,53 +139,54 @@ log "Installing packages (this takes ~2 min)..."
 
 ok "Packages installed"
 
-# ── 5. check weights ───────────────────────────────────────────────────────────
+# ── 5. download weights from HuggingFace ──────────────────────────────────────
 log "Checking model weights..."
 
-WEIGHTS_OK=false
 if [ -f "gr00t_weights_mlx/meta.json" ] && \
    [ -f "gr00t_weights_mlx/vision.safetensors" ] && \
    [ -f "gr00t_weights_mlx/dit.safetensors" ] && \
    [ -d "gr00t_llm_mlx" ] && [ -n "$(ls -A gr00t_llm_mlx 2>/dev/null)" ]; then
-    ok "Weights found"
-    WEIGHTS_OK=true
+    ok "Weights already present"
 else
-    warn "Model weights not found."
-    echo ""
-    echo "  Weights must be exported once from the full PyTorch checkpoint."
-    echo "  If you have them on another machine, copy them over:"
-    echo ""
-    echo "    scp -r <other_mac>:~/gemma_robot/mlx_gr00t/gr00t_weights_mlx \\"
-    echo "        $INSTALL_DIR/mlx_gr00t/"
-    echo "    scp -r <other_mac>:~/gemma_robot/mlx_gr00t/gr00t_llm_mlx \\"
-    echo "        $INSTALL_DIR/mlx_gr00t/"
-    echo ""
-    echo "  Then re-run this script."
+    log "Downloading model weights (~4GB, takes a few minutes)..."
+    "$PYTHON" - <<'PYEOF' || die "Weight download failed — check output above"
+import sys, shutil
+from pathlib import Path
+from huggingface_hub import snapshot_download
+
+REPO = "youngbrett48/ntl_gemma_robot_mlx"
+HERE = Path(".")
+
+local = Path(snapshot_download(REPO))
+for folder in ["gr00t_weights_mlx", "gr00t_llm_mlx"]:
+    src = local / folder
+    dst = HERE / folder
+    if not src.exists():
+        print(f"ERROR: {folder} missing from HF repo", file=sys.stderr)
+        sys.exit(1)
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(str(src), str(dst))
+    print(f"  ✓ {folder}")
+PYEOF
+    ok "Weights downloaded"
 fi
 
 # ── 6. build and open app ──────────────────────────────────────────────────────
-if [ "$WEIGHTS_OK" = true ]; then
-    log "Building GemmaRobot.app..."
-    bash build_app.sh || die "App build failed — see output above"
+log "Building GemmaRobot.app..."
+bash build_app.sh || die "App build failed — see output above"
 
-    echo ""
-    ok "Done!"
-    echo ""
+echo ""
+ok "Done!"
+echo ""
 
-    DMG="$INSTALL_DIR/dist/GemmaRobot.dmg"
-    APP="$INSTALL_DIR/dist/GemmaRobot.app"
+DMG="$INSTALL_DIR/dist/GemmaRobot.dmg"
+APP="$INSTALL_DIR/dist/GemmaRobot.app"
 
-    if [ -f "$DMG" ]; then
-        echo "  Opening installer..."
-        open "$DMG"
-    elif [ -d "$APP" ]; then
-        echo "  Opening app..."
-        open "$APP"
-    fi
-else
-    echo ""
-    warn "Skipping app build — add weights first, then re-run:"
-    echo ""
-    echo "    bash $INSTALL_DIR/mlx_gr00t/install.sh"
-    echo ""
+if [ -f "$DMG" ]; then
+    echo "  Opening installer..."
+    open "$DMG"
+elif [ -d "$APP" ]; then
+    echo "  Opening app..."
+    open "$APP"
 fi
