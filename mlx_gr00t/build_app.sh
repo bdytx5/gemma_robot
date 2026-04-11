@@ -136,7 +136,7 @@ if [ -z "$PYTHON" ]; then
     "$ENV_DIR/bin/pip" install mlx mlx-lm \
         "transformers>=4.51.0,<5.0" \
         safetensors huggingface_hub \
-        Pillow numpy requests msgpack tokenizers \
+        Pillow numpy requests msgpack tokenizers sentencepiece \
         wandb weave moviepy
 
     PYTHON="$ENV_DIR/bin/python"

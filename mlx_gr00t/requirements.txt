@@ -11,6 +11,7 @@ einops
 requests
 msgpack
 tokenizers
+sentencepiece
 wandb
 weave
 moviepy
