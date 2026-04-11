@@ -373,8 +373,28 @@ class GemmaRobotApp:
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _log_msg(self, msg, tag=""):
+        import re, webbrowser
         self._log.config(state="normal")
-        self._log.insert("end", msg + "\n", tag)
+        url_pattern = re.compile(r'https?://\S+')
+        last = 0
+        for m in url_pattern.finditer(msg):
+            if m.start() > last:
+                self._log.insert("end", msg[last:m.start()], tag)
+            url = m.group()
+            link_tag = f"link_{id(url)}_{self._log.index('end')}"
+            self._log.insert("end", url, (tag, link_tag))
+            self._log.tag_config(link_tag, foreground=ACCENT,
+                                  underline=True)
+            self._log.tag_bind(link_tag, "<Button-1>",
+                               lambda e, u=url: webbrowser.open(u))
+            self._log.tag_bind(link_tag, "<Enter>",
+                               lambda e: self._log.config(cursor="hand2"))
+            self._log.tag_bind(link_tag, "<Leave>",
+                               lambda e: self._log.config(cursor=""))
+            last = m.end()
+        if last < len(msg):
+            self._log.insert("end", msg[last:], tag)
+        self._log.insert("end", "\n")
         self._log.see("end")
         self._log.config(state="disabled")
 

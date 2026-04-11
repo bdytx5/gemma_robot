@@ -172,6 +172,21 @@ PYEOF
     ok "Weights downloaded"
 fi
 
+# ── 5b. convert LLM to mlx-lm format if needed ────────────────────────────────
+if [ ! -f "gr00t_llm_mlx/.mlx_converted" ]; then
+    log "Converting LLM to mlx-lm format (one-time, ~2 min)..."
+    "$PYTHON" -m mlx_lm.convert \
+        --hf-path gr00t_llm_mlx \
+        --mlx-path gr00t_llm_mlx_converted \
+        || die "mlx-lm convert failed"
+    rm -rf gr00t_llm_mlx
+    mv gr00t_llm_mlx_converted gr00t_llm_mlx
+    touch gr00t_llm_mlx/.mlx_converted
+    ok "LLM converted to mlx-lm format"
+else
+    ok "LLM already converted"
+fi
+
 # ── 6. build and open app ──────────────────────────────────────────────────────
 log "Building GemmaRobot.app..."
 bash build_app.sh || die "App build failed — see output above"
