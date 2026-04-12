@@ -86,14 +86,14 @@ The Stage 3 checkpoint is fine-tuned back on Fractal alone (lr 5e-5, 5k steps). 
 
 Checkpoints are evaluated in [SimplerEnv](https://github.com/simpler-env/SimplerEnv), a GPU-accelerated physics sim that replicates the Google Robot tabletop setup at 10–15× real-time speed. 200 episodes per task, randomized object positions and seeds. An episode is a success only if the robot completes the task within the step budget (504 steps). The eval server runs as a FastAPI process exposed via ngrok; the Mac client (this repo) drives the loop using MLX inference locally.
 
-**GR00T-N1.6-fractal — Google Robot, 200 eps per task:**
+50 episodes per task, 300 total. Comparing NVIDIA's stock `GR00T-N1.6-fractal` checkpoint against this project's Gemma3-270M trained model:
 
-| Task | Success |
-|---|---|
-| pick\_coke\_can | 97.5% |
-| pick\_object | 87.0% |
-| move\_near | 75.5% |
-| open\_drawer | 44.0% |
-| close\_drawer | 87.5% |
-| place\_in\_closed\_drawer | 14.5% |
-| **Average** | **67.7%** |
+| Task | GR00T-N1.6 (stock) | Ours (Gemma3) | Δ |
+|---|---|---|---|
+| close\_drawer | 60.0% | 84.0% | +24.0% |
+| move\_near | 46.0% | 32.0% | −14.0% |
+| open\_drawer | 8.0% | 46.0% | +38.0% |
+| pick\_coke\_can | 48.0% | 66.0% | +18.0% |
+| pick\_object | 28.0% | 52.0% | +24.0% |
+| place\_in\_closed\_drawer | 0.0% | 2.0% | +2.0% |
+| **Average** | **31.7%** | **47.0%** | **+15.3%** |

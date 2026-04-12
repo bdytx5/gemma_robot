@@ -144,7 +144,11 @@ async def reset(request: Request):
         _env, obs, info = _build_env(env_name, seed, max_episode_steps, n_action_steps, video_dir)
         _args.env_name = env_name
     else:
-        obs, info = _env.reset(seed=seed)
+        try:
+            obs, info = _env.reset(seed=seed)
+        except Exception as e:
+            print(f"[sim_server] env.reset() failed ({e}), rebuilding env...")
+            _env, obs, info = _build_env(env_name, seed, max_episode_steps, n_action_steps, video_dir)
 
     _episode_steps = 0
 
@@ -237,6 +241,49 @@ async def step_cuda(request: Request):
 
     # Squeeze batch dim (1, T, D) → (T, D) and extract first action step
     # MultiStepWrapper already handles the T dimension internally, so pass full (T, D)
+    action = {k: v[0] if isinstance(v, np.ndarray) and v.ndim >= 2 else v
+              for k, v in action_dict.items()}
+
+    # Step env — MultiStepWrapper expects {key: (n_action_steps, D)}
+    next_obs, reward, done, truncated, info = _env.step(action)
+    _episode_steps += 1
+
+    raw_success = info.get("success", False)
+    success = bool(np.any(raw_success)) if isinstance(raw_success, np.ndarray) else bool(raw_success)
+    terminated = done or truncated or _episode_steps >= _max_steps
+
+    return msgpack_response({
+        "obs": _to_serializable(next_obs),
+        "reward": float(reward) if not isinstance(reward, dict) else 0.0,
+        "done": bool(terminated),
+        "success": success,
+        "episode_steps": _episode_steps,
+        "action": _to_serializable(action),
+    })
+
+
+@app.post("/step_cuda")
+async def step_cuda(request: Request):
+    """Single round-trip: CUDA policy predicts action from current obs, steps env, returns next obs.
+
+    Client sends current obs (from previous /reset or /step_cuda).
+    Server: predict → step → return (next_obs, reward, done, success, action_taken).
+    """
+    global _env, _episode_steps
+
+    if _env is None:
+        return msgpack_response({"error": "call /reset first"})
+    if _policy_client is None:
+        return msgpack_response({"error": "no policy server — start with --policy_host/--policy_port"})
+
+    body = unpack(await request.body())
+    obs = body["obs"]
+
+    # Get action from CUDA policy
+    batched = _batch_obs(obs)
+    action_dict, _ = _policy_client.get_action(batched)
+
+    # Squeeze batch dim (1, T, D) → (T, D)
     action = {k: v[0] if isinstance(v, np.ndarray) and v.ndim >= 2 else v
               for k, v in action_dict.items()}
 

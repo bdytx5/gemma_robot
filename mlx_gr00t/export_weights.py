@@ -105,8 +105,11 @@ def main():
     with open(OUT_DIR / "config.json") as f:
         cfg = json.load(f)
 
-    image_size = (getattr(eagle_config, "force_image_size", None)
-                  or eagle_config.vision_config.image_size)
+    # SigLIP position embeddings are for 729 patches = 27x27, so native size = 27*14 = 378
+    # eagle_config may report 384 but that's wrong — use 378 to match training
+    import math as _math
+    _num_patches = eagle_config.vision_config.num_positions if hasattr(eagle_config.vision_config, 'num_positions') else 729
+    image_size = int(_math.sqrt(_num_patches)) * eagle_config.vision_config.patch_size  # 27*14=378
     meta = {
         "image_size":        image_size,
         "image_token_index": eagle_config.image_token_index,

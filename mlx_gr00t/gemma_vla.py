@@ -2,9 +2,9 @@
 GemmaVLA — full Vision-Language-Action model for robot inference on Apple Silicon.
 
 Wraps the complete GR00T pipeline as a single class:
-  - SigLIP vision encoder   (MLX, bfloat16)
-  - Gemma3 LLM trunk        (MLX, bfloat16)
-  - DiT action head         (MLX, bfloat16, flow matching)
+  - SigLIP vision encoder   (MLX, configurable dtype)
+  - Gemma3 LLM trunk        (MLX, configurable dtype)
+  - DiT action head         (MLX, configurable dtype, flow matching)
 
 Usage:
     from gemma_vla import GemmaVLA
@@ -103,6 +103,7 @@ class GemmaVLA:
         weights_dir: str,
         mlx_llm_path: str,
         n_diffusion_steps: int = 4,
+        dtype: str = "float16",
     ) -> "GemmaVLA":
         """
         Fast load from pre-exported MLX weights (output of export_weights.py).
@@ -130,32 +131,47 @@ class GemmaVLA:
         dit_config        = meta
 
         # Vision
-        print("[GemmaVLA] Loading vision model from exported weights...")
+        print(f"[GemmaVLA] Loading vision model from exported weights ({dtype})...")
         from vision_mlx import build_vision_mlx_from_exported
         vision_model = build_vision_mlx_from_exported(
-            str(weights_dir / "vision.safetensors"), meta
+            str(weights_dir / "vision.safetensors"), meta, dtype=dtype
         )
 
         # LLM
-        print("[GemmaVLA] Loading Gemma3 LLM...")
+        print(f"[GemmaVLA] Loading Gemma3 LLM ({dtype})...")
+        import mlx.core as mx
+        import mlx.utils as mlx_utils
         from mlx_lm import load as mlx_load
         from transformers import GemmaTokenizer
+        _llm_dtype = getattr(mx, dtype)
         llm, _ = mlx_load(mlx_llm_path)
         llm.eval()
+        llm.load_weights(list(mlx_utils.tree_flatten(
+            mlx_utils.tree_map(
+                lambda x: x.astype(_llm_dtype) if isinstance(x, mx.array) else x,
+                llm.parameters(),
+            )
+        )))
+        print(f"  LLM forced to {dtype}")
         tokenizer = GemmaTokenizer.from_pretrained(
             str(weights_dir / "eagle_tokenizer"), use_fast=False, local_files_only=True
         )
         print(f"  Tokenizer vocab={len(tokenizer)}")
 
         # DiT
-        print("[GemmaVLA] Loading DiT action head from exported weights...")
+        print(f"[GemmaVLA] Loading DiT action head from exported weights ({dtype})...")
         from dit_mlx import build_dit_mlx_from_exported
         dit, _ = build_dit_mlx_from_exported(
             str(weights_dir / "dit.safetensors"),
             str(weights_dir / "config.json"),
+            dtype=dtype,
         )
+        dit.eval()
 
-        return cls(
+        # Vision eval mode
+        vision_model.eval()
+
+        obj = cls(
             vision_model=vision_model,
             llm=llm,
             tokenizer=tokenizer,
@@ -166,6 +182,8 @@ class GemmaVLA:
             n_diffusion_steps=n_diffusion_steps,
             action_norm_stats=action_norm_stats,
         )
+        obj._dtype = dtype
+        return obj
 
     @classmethod
     def from_pretrained(
@@ -176,6 +194,7 @@ class GemmaVLA:
         mlx_llm_path: str,
         hf_token=None,
         n_diffusion_steps: int = 4,
+        dtype: str = "float16",
     ) -> "GemmaVLA":
         """
         Load all components from HuggingFace repos and return a ready GemmaVLA.
@@ -250,29 +269,41 @@ class GemmaVLA:
         image_size = getattr(eagle_config, "force_image_size", None) or eagle_config.vision_config.image_size
         image_token_index = eagle_config.image_token_index
 
-        # 3. Vision encoder (MLX, bfloat16)
+        # 3. Vision encoder (MLX, configurable dtype)
         print("[GemmaVLA] Building vision encoder...")
         from vision_mlx import build_vision_mlx
-        vision_model = build_vision_mlx(state_dict, eagle_config)
+        vision_model = build_vision_mlx(state_dict, eagle_config, dtype=dtype)
 
-        # 4. Gemma3 LLM (MLX, bfloat16)
-        print("[GemmaVLA] Loading Gemma3 LLM...")
+        # 4. Gemma3 LLM (MLX, configurable dtype)
+        print(f"[GemmaVLA] Loading Gemma3 LLM ({dtype})...")
+        import mlx.core as mx
+        import mlx.utils as mlx_utils
         from mlx_lm import load as mlx_load
         from transformers import GemmaTokenizer
+        _llm_dtype = getattr(mx, dtype)
         llm, _ = mlx_load(mlx_llm_path)
         llm.eval()
+        llm.load_weights(list(mlx_utils.tree_flatten(
+            mlx_utils.tree_map(
+                lambda x: x.astype(_llm_dtype) if isinstance(x, mx.array) else x,
+                llm.parameters(),
+            )
+        )))
+        print(f"  LLM forced to {dtype}")
         tok_kwargs = {"use_fast": False, "local_files_only": True}
         if hf_token:
             tok_kwargs["token"] = hf_token
         tokenizer = GemmaTokenizer.from_pretrained(eagle_repo, **tok_kwargs)
         print(f"  Tokenizer vocab={len(tokenizer)}")
 
-        # 5. DiT action head (MLX, bfloat16)
+        # 5. DiT action head (MLX, configurable dtype)
         print("[GemmaVLA] Building DiT action head...")
         from dit_mlx import build_dit_mlx
-        dit, _ = build_dit_mlx(state_dict, cfg_path)
+        dit, _ = build_dit_mlx(state_dict, cfg_path, dtype=dtype)
+        dit.eval()
+        vision_model.eval()
 
-        return cls(
+        obj = cls(
             vision_model=vision_model,
             llm=llm,
             tokenizer=tokenizer,
@@ -283,6 +314,8 @@ class GemmaVLA:
             n_diffusion_steps=n_diffusion_steps,
             action_norm_stats=action_norm_stats,
         )
+        obj._dtype = dtype
+        return obj
 
     # ------------------------------------------------------------------
     # Core forward pass
@@ -322,9 +355,18 @@ class GemmaVLA:
         n_img_tokens = vit_embeds.shape[1]
 
         # --- C. Tokenize ---
+        # Match EXACT training-time prompt format from Gr00tN1d6DataCollator /
+        # _Eagle2_5ProcessorShim.apply_chat_template():
+        #   <start_of_turn>user\n<img>[IMG_CONTEXT*N]</img>\n{instruction}<end_of_turn>\n<start_of_turn>model\n
+        # IMAGE COMES BEFORE INSTRUCTION, gemma3-chat template, NOT <|im_start|>.
         IMG_CONTEXT = "<IMG_CONTEXT>"
         image_block = f"<img>{IMG_CONTEXT * n_img_tokens}</img>"
-        prompt = f"{image_block}\n{instruction}"
+        prompt = (
+            f"<start_of_turn>user\n"
+            f"{image_block}\n"
+            f"{instruction}<end_of_turn>\n"
+            f"<start_of_turn>model\n"
+        )
         input_ids = self.tokenizer.encode(prompt)
         T = len(input_ids)
 
@@ -357,7 +399,9 @@ class GemmaVLA:
         if self._state_min is not None:
             d = len(self._state_min)
             rng = np.maximum(self._state_max - self._state_min, 1e-8)
-            norm_state[:d] = (robot_state[:d] - self._state_min) / rng * 2.0 - 1.0
+            norm_state[:d] = np.clip(
+                (robot_state[:d] - self._state_min) / rng * 2.0 - 1.0, -1.0, 1.0
+            )
 
         padded_state = np.zeros(self._max_state_dim, dtype=np.float32)
         padded_state[:norm_state.shape[0]] = norm_state
@@ -393,11 +437,12 @@ class GemmaVLA:
     # ------------------------------------------------------------------
 
     def __repr__(self) -> str:
+        dt = getattr(self, "_dtype", "float16")
         return (
             f"GemmaVLA(\n"
-            f"  vision: SigLIP 27L bfloat16\n"
-            f"  llm:    Gemma3 18L bfloat16\n"
-            f"  dit:    AlternateVLDiT 32L bfloat16  steps={self.n_diffusion_steps}\n"
+            f"  vision: SigLIP 27L {dt}\n"
+            f"  llm:    Gemma3 18L {dt}\n"
+            f"  dit:    AlternateVLDiT 32L {dt}  steps={self.n_diffusion_steps}\n"
             f"  image_size={self.image_size}  max_state_dim={self._max_state_dim}\n"
             f")"
         )

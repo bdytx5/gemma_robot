@@ -28,8 +28,8 @@ import numpy as np
 def timestep_sinusoidal(timesteps, dim=256, flip_sin_to_cos=True, downscale_freq_shift=1):
     """Matches diffusers Timesteps(num_channels=256, flip_sin_to_cos=True, downscale_freq_shift=1)."""
     half = dim // 2
-    exponent = -math.log(10000) * mx.arange(half, dtype=mx.bfloat16) / (half - downscale_freq_shift)
-    emb = timesteps[:, None].astype(mx.bfloat16) * mx.exp(exponent)[None, :]
+    exponent = -math.log(10000) * mx.arange(half, dtype=mx.float16) / (half - downscale_freq_shift)
+    emb = timesteps[:, None].astype(mx.float16) * mx.exp(exponent)[None, :]
     if flip_sin_to_cos:
         return mx.concatenate([mx.cos(emb), mx.sin(emb)], axis=-1)
     return mx.concatenate([mx.sin(emb), mx.cos(emb)], axis=-1)
@@ -39,8 +39,8 @@ def sinusoidal_pos_encoding(timesteps_2d, dim):
     """Matches SinusoidalPositionalEncoding in embodiment_conditioned_mlp.py.
     timesteps_2d: (B, T) → output: (B, T, dim)"""
     half = dim // 2
-    exponent = -mx.arange(half, dtype=mx.bfloat16) * (math.log(10000.0) / half)
-    freqs = timesteps_2d[..., None].astype(mx.bfloat16) * mx.exp(exponent)  # (B, T, half)
+    exponent = -mx.arange(half, dtype=mx.float16) * (math.log(10000.0) / half)
+    freqs = timesteps_2d[..., None].astype(mx.float16) * mx.exp(exponent)  # (B, T, half)
     return mx.concatenate([mx.sin(freqs), mx.cos(freqs)], axis=-1)
 
 
@@ -221,8 +221,8 @@ class AlternateVLDiT(nn.Module):
 class CategorySpecificLinear(nn.Module):
     def __init__(self, num_categories, input_dim, hidden_dim):
         super().__init__()
-        self.W = mx.zeros((num_categories, input_dim, hidden_dim), dtype=mx.bfloat16)
-        self.b = mx.zeros((num_categories, hidden_dim), dtype=mx.bfloat16)
+        self.W = mx.zeros((num_categories, input_dim, hidden_dim), dtype=mx.float16)
+        self.b = mx.zeros((num_categories, hidden_dim), dtype=mx.float16)
 
     def __call__(self, x, cat_ids):
         # x: (B, T, in), cat_ids: (B,)
@@ -359,9 +359,10 @@ class Gr00tActionHeadMLX(nn.Module):
         Returns:
             action_pred: (B, action_horizon, action_dim)
         """
-        # Cast inputs to bfloat16 — all internals are bfloat16 too (no casting overhead)
-        backbone_features = backbone_features.astype(mx.bfloat16)
-        state = state.astype(mx.bfloat16)
+        # Cast inputs to compute dtype
+        _dt = getattr(self, "_compute_dtype", mx.float16)
+        backbone_features = backbone_features.astype(_dt)
+        state = state.astype(_dt)
 
         # Project backbone features
         if self.backbone_proj is not None:
@@ -376,7 +377,7 @@ class Gr00tActionHeadMLX(nn.Module):
 
         # Initial noise
         B = vl_embeds.shape[0]
-        actions = mx.random.normal((B, self.action_horizon, self.action_dim)).astype(mx.bfloat16)
+        actions = mx.random.normal((B, self.action_horizon, self.action_dim)).astype(_dt)
         dt = 1.0 / self.num_inference_timesteps
 
         # Pre-compute position embedding once
@@ -466,7 +467,7 @@ def convert_torch_to_mlx(state_dict):
     return mlx_weights
 
 
-def build_dit_mlx(state_dict: dict, config_path: str):
+def build_dit_mlx(state_dict: dict, config_path: str, dtype: str = "float16"):
     """Build MLX DiT action head from PyTorch state dict and config.
 
     Args:
@@ -493,22 +494,24 @@ def build_dit_mlx(state_dict: dict, config_path: str):
     # Convert and load
     mlx_weights = convert_torch_to_mlx(ah_sd)
 
-    # Load into model and convert to bfloat16
+    # Load into model and convert to requested dtype
     model.load_weights(list(mlx_weights.items()))
 
-    # Convert all parameters to bfloat16 for 2x bandwidth savings
+    _dtype = getattr(mx, dtype)
     import mlx.utils
-    params = mlx.utils.tree_map(lambda x: x.astype(mx.bfloat16) if x.dtype == mx.float32 else x,
+    params = mlx.utils.tree_map(lambda x: x.astype(_dtype) if x.dtype == mx.float32 else x,
                                  model.parameters())
     model.load_weights(list(mlx.utils.tree_flatten(params)))
+    model._compute_dtype = _dtype
 
     n_params = sum(v.size for _, v in mlx.utils.tree_flatten(model.parameters()))
-    print(f"  MLX DiT loaded: {n_params:,} parameters ({n_params * 2 / 1e9:.2f} GB bfloat16)")
+    bytes_per = {"float16": 2, "bfloat16": 2, "float32": 4}.get(dtype, 2)
+    print(f"  MLX DiT loaded: {n_params:,} parameters ({n_params * bytes_per / 1e9:.2f} GB {dtype})")
 
     return model, config
 
 
-def build_dit_mlx_from_exported(safetensors_path: str, config_path: str):
+def build_dit_mlx_from_exported(safetensors_path: str, config_path: str, dtype: str = "float16"):
     """Load DiT from pre-exported MLX safetensors (no PyTorch needed)."""
     import mlx.utils
 
@@ -516,10 +519,13 @@ def build_dit_mlx_from_exported(safetensors_path: str, config_path: str):
         config = json.load(f)
 
     model = Gr00tActionHeadMLX(config)
+    _dtype = getattr(mx, dtype)
     weights = mx.load(safetensors_path)
-    weights = {k: v.astype(mx.bfloat16) if v.dtype == mx.float16 else v for k, v in weights.items()}
+    weights = {k: v.astype(_dtype) for k, v in weights.items()}
     model.load_weights(list(weights.items()))
+    model._compute_dtype = _dtype
 
     n_params = sum(v.size for _, v in mlx.utils.tree_flatten(model.parameters()))
-    print(f"  DiT loaded from exported: {n_params:,} params ({n_params * 2 / 1e9:.2f} GB bfloat16)")
+    bytes_per = {"float16": 2, "bfloat16": 2, "float32": 4}.get(dtype, 2)
+    print(f"  DiT loaded from exported: {n_params:,} params ({n_params * bytes_per / 1e9:.2f} GB {dtype})")
     return model, config

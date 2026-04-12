@@ -38,7 +38,7 @@ _CONFIG_DOC = "https://docs.google.com/document/d/1wF4OwIRHZAGgZDBgXPliWfG589Qbe
 def _fetch_server_url() -> str:
     try:
         r = requests.get(_CONFIG_DOC, timeout=5)
-        url = r.text.strip().lstrip("\ufeff")   # strip BOM
+        url = r.text.strip().lstrip("\ufeff")
         if url.startswith("http"):
             return url
     except Exception:
@@ -56,6 +56,11 @@ RED      = "#ff5555"
 GREEN    = "#50fa7b"
 YELLOW   = "#f1fa8c"
 FONT     = "SF Pro Display"
+
+# ── dtype config ──────────────────────────────────────────────────────────────
+# Controls weight storage and compute precision for all components (vision, LLM, DiT).
+# Options: "float16" | "bfloat16" | "float32"
+COMPUTE_DTYPE = "float16"
 
 ACTION_KEYS = ["action.x", "action.y", "action.z",
                "action.roll", "action.pitch", "action.yaw",
@@ -88,13 +93,16 @@ HEADERS = {"Content-Type": "application/msgpack"}
 
 
 # ── sim client ────────────────────────────────────────────────────────────────
+NGROK_HEADERS = {"ngrok-skip-browser-warning": "1"}
+
 class SimClient:
     def __init__(self, url, timeout=120):
         self.base = url.rstrip("/")
         self.timeout = timeout
 
     def ping(self):
-        return requests.get(f"{self.base}/info", timeout=8).json()
+        return requests.get(f"{self.base}/info", timeout=8,
+                            headers=NGROK_HEADERS).json()
 
     def reset(self, env_name=None, seed=None, max_episode_steps=None,
               n_action_steps=None):
@@ -104,14 +112,14 @@ class SimClient:
         if max_episode_steps: body["max_episode_steps"] = max_episode_steps
         if n_action_steps:    body["n_action_steps"] = n_action_steps
         r = requests.post(f"{self.base}/reset", data=pack(body),
-                          headers=HEADERS, timeout=self.timeout)
+                          headers={**HEADERS, **NGROK_HEADERS}, timeout=self.timeout)
         r.raise_for_status()
         return unpack(r.content)
 
     def step(self, action):
         r = requests.post(f"{self.base}/step",
                           data=pack({"action": action}),
-                          headers=HEADERS, timeout=self.timeout)
+                          headers={**HEADERS, **NGROK_HEADERS}, timeout=self.timeout)
         r.raise_for_status()
         return unpack(r.content)
 
@@ -172,19 +180,32 @@ class GemmaRobotApp:
         self.root = root
         self.root.title("GemmaRobot Eval")
         self.root.configure(bg=BG)
-        self.root.geometry("960x720")
-        self.root.minsize(860, 640)
+        self.root.geometry("1380x780")
+        self.root.minsize(1100, 660)
 
         self._q = queue.Queue()
         self._stop_event = threading.Event()
+        self._skip_ep_event = threading.Event()
         self._vla = None
         self._running = False
         self._eval_thread_ref = None
 
+        # gallery state
+        self._past_episodes = []        # list of {ep, seed, success, steps, frames, instruction, weave_url}
+        self._gallery_frames = []       # frames currently loaded in gallery player
+        self._gallery_frame_idx = 0
+        self._gallery_playing = False
+        self._gallery_after_id = None
+        self._gallery_fps = 5           # default 5fps
+
+        # URL edit state
+        self._url_editing = False
+        self._weave_project_url = None  # set when weave inits
+
         self._build_ui()
         self.root.after(50, self._drain_queue)
+        threading.Thread(target=self._auto_setup_check, daemon=True).start()
 
-        # redirect stdout/stderr → log panel
         sys.stdout = _StreamRedirect(self, "")
         sys.stderr = _StreamRedirect(self, "err")
 
@@ -200,7 +221,6 @@ class GemmaRobotApp:
         tk.Label(top, text="  MLX · Apple Silicon", bg=BG, fg=TEXT_DIM,
                  font=(FONT, 12)).pack(side="left")
 
-        # status dot
         self._status_dot = tk.Label(top, text="●", bg=BG, fg=RED,
                                      font=(FONT, 14))
         self._status_dot.pack(side="right", padx=(0, 4))
@@ -208,8 +228,7 @@ class GemmaRobotApp:
                                      fg=TEXT_DIM, font=(FONT, 11))
         self._status_lbl.pack(side="right")
 
-        sep = tk.Frame(self.root, bg=BG3, height=1)
-        sep.pack(fill="x")
+        tk.Frame(self.root, bg=BG3, height=1).pack(fill="x")
 
         # ---- config row ----
         cfg = tk.Frame(self.root, bg=BG2, pady=10, padx=16)
@@ -219,10 +238,21 @@ class GemmaRobotApp:
                  font=(FONT, 11)).grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._url_var = tk.StringVar(value="https://")
         threading.Thread(target=self._load_server_url, daemon=True).start()
-        url_entry = tk.Entry(cfg, textvariable=self._url_var, bg=BG3,
-                             fg=TEXT, insertbackground=TEXT, relief="flat",
-                             font=(FONT, 12), width=42)
-        url_entry.grid(row=0, column=1, padx=(0, 12))
+
+        url_frame = tk.Frame(cfg, bg=BG2)
+        url_frame.grid(row=0, column=1, padx=(0, 12), sticky="w")
+        self._url_mask_lbl = tk.Label(url_frame, text="loading…", bg=BG3,
+                                       fg=TEXT_DIM, font=(FONT, 12),
+                                       width=38, anchor="w", padx=6, pady=3)
+        self._url_mask_lbl.pack(side="left")
+        self._url_entry = tk.Entry(url_frame, textvariable=self._url_var, bg=BG3,
+                                    fg=TEXT, insertbackground=TEXT, relief="flat",
+                                    font=(FONT, 12), width=38)
+        self._url_edit_btn = tk.Button(url_frame, text="✎", bg=BG3, fg=ACCENT,
+                                        font=(FONT, 10), relief="flat", padx=6, pady=2,
+                                        cursor="hand2", command=self._toggle_url_edit)
+        self._url_edit_btn.pack(side="left", padx=(4, 0))
+        self._url_var.trace_add("write", lambda *_: self._q.put((self._update_url_mask, (), {})))
 
         tk.Label(cfg, text="Episodes", bg=BG2, fg=TEXT_DIM,
                  font=(FONT, 11)).grid(row=0, column=2, sticky="w", padx=(0, 6))
@@ -236,7 +266,7 @@ class GemmaRobotApp:
         self._seed_var = tk.StringVar(value="42")
         tk.Entry(cfg, textvariable=self._seed_var, bg=BG3, fg=TEXT,
                  insertbackground=TEXT, relief="flat",
-                 font=(FONT, 12), width=6).grid(row=0, column=5, padx=(0, 16))
+                 font=(FONT, 12), width=6).grid(row=0, column=5, padx=(0, 12))
 
         tk.Label(cfg, text="Diff steps", bg=BG2, fg=TEXT_DIM,
                  font=(FONT, 11)).grid(row=0, column=6, sticky="w", padx=(0, 6))
@@ -244,6 +274,26 @@ class GemmaRobotApp:
         tk.Entry(cfg, textvariable=self._diff_var, bg=BG3, fg=TEXT,
                  insertbackground=TEXT, relief="flat",
                  font=(FONT, 12), width=3).grid(row=0, column=7, padx=(0, 16))
+
+        self._run_btn = tk.Button(cfg, text="▶  Run Eval", bg=ACCENT,
+                                   fg="#000000", font=(FONT, 12, "bold"),
+                                   relief="flat", padx=16, pady=4,
+                                   cursor="hand2", command=self._on_run_stop)
+        self._run_btn.grid(row=0, column=8, padx=(0, 6))
+
+        self._next_btn = tk.Button(cfg, text="⏭  Next Ep", bg=BG3,
+                                    fg=TEXT_DIM, font=(FONT, 11),
+                                    relief="flat", padx=10, pady=4,
+                                    cursor="hand2", state="disabled",
+                                    command=self._on_next_episode)
+        self._next_btn.grid(row=0, column=9, padx=(0, 6))
+
+        self._setup_btn = tk.Button(cfg, text="⚙  Setup Env", bg=BG3,
+                                     fg="#000000", font=(FONT, 11),
+                                     relief="flat", padx=12, pady=4,
+                                     cursor="hand2",
+                                     command=self._on_setup_env)
+        self._setup_btn.grid(row=0, column=10)
 
         tk.Label(cfg, text="Task", bg=BG2, fg=TEXT_DIM,
                  font=(FONT, 11)).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
@@ -256,75 +306,28 @@ class GemmaRobotApp:
             "simpler_env_google/google_robot_place_in_closed_drawer",
         ]
         self._task_var = tk.StringVar(value=TASKS[0])
-        task_menu = ttk.Combobox(cfg, textvariable=self._task_var, values=TASKS,
-                                  font=(FONT, 11), width=52, state="readonly")
-        task_menu.grid(row=1, column=1, columnspan=5, sticky="w", pady=(8, 0))
+        ttk.Combobox(cfg, textvariable=self._task_var, values=TASKS,
+                     font=(FONT, 11), width=52,
+                     state="readonly").grid(row=1, column=1, columnspan=7,
+                                            sticky="w", pady=(8, 0))
 
-        self._run_btn = tk.Button(cfg, text="▶  Run Eval", bg=ACCENT,
-                                   fg="#000000", font=(FONT, 12, "bold"),
-                                   relief="flat", padx=16, pady=4,
-                                   cursor="hand2",
-                                   command=self._on_run_stop)
-        self._run_btn.grid(row=0, column=6, padx=(0, 8))
+        tk.Frame(self.root, bg=BG3, height=1).pack(fill="x")
 
-        self._setup_btn = tk.Button(cfg, text="⚙  Setup Env", bg=BG3,
-                                     fg=TEXT, font=(FONT, 11),
-                                     relief="flat", padx=12, pady=4,
-                                     cursor="hand2",
-                                     command=self._on_setup_env)
-        self._setup_btn.grid(row=0, column=7)
-
-        # ---- server control row ----
-        srv = tk.Frame(self.root, bg=BG2, pady=6, padx=16)
-        srv.pack(fill="x")
-
-        self._srv_status_dot = tk.Label(srv, text="●", bg=BG2, fg=TEXT_DIM,
-                                         font=(FONT, 12))
-        self._srv_status_dot.pack(side="left", padx=(0, 4))
-
-        self._srv_status_var = tk.StringVar(value="Server: unknown")
-        tk.Label(srv, textvariable=self._srv_status_var, bg=BG2, fg=TEXT_DIM,
-                 font=(FONT, 10)).pack(side="left", padx=(0, 16))
-
-        self._check_btn = tk.Button(srv, text="⟳  Check Status", bg=BG3,
-                                     fg=TEXT, font=(FONT, 10),
-                                     relief="flat", padx=10, pady=3,
-                                     cursor="hand2",
-                                     command=self._on_check_status)
-        self._check_btn.pack(side="left", padx=(0, 8))
-
-        self._restart_btn = tk.Button(srv, text="↺  Restart Server", bg=BG3,
-                                       fg=TEXT, font=(FONT, 10),
-                                       relief="flat", padx=10, pady=3,
-                                       cursor="hand2",
-                                       command=self._on_restart_server)
-        self._restart_btn.pack(side="left")
-
-        sep2 = tk.Frame(self.root, bg=BG3, height=1)
-        sep2.pack(fill="x")
-
-        # ---- log panel — packed BEFORE content so it anchors to bottom ----
-        sep3 = tk.Frame(self.root, bg=BG3, height=1)
-        sep3.pack(side="bottom", fill="x")
-
-        log_outer = tk.Frame(self.root, bg=BG, height=160)
+        # ---- log panel (bottom) ----
+        tk.Frame(self.root, bg=BG3, height=1).pack(side="bottom", fill="x")
+        log_outer = tk.Frame(self.root, bg=BG, height=140)
         log_outer.pack(side="bottom", fill="x", padx=16, pady=(4, 6))
         log_outer.pack_propagate(False)
-
         tk.Label(log_outer, text="LOG", bg=BG, fg=TEXT_DIM,
                  font=(FONT, 9, "bold")).pack(anchor="w")
-
         log_frame = tk.Frame(log_outer, bg=BG2)
         log_frame.pack(fill="both", expand=True, pady=(2, 0))
-
         self._log = tk.Text(log_frame, bg=BG2, fg=TEXT, font=("SF Mono", 10),
                              relief="flat", state="disabled", wrap="word")
         self._log.pack(side="left", fill="both", expand=True, padx=8, pady=6)
-
         sb = ttk.Scrollbar(log_frame, command=self._log.yview)
         sb.pack(side="right", fill="y")
         self._log.config(yscrollcommand=sb.set)
-
         self._log.tag_config("ok",  foreground=GREEN)
         self._log.tag_config("err", foreground=RED)
         self._log.tag_config("dim", foreground=TEXT_DIM)
@@ -334,44 +337,96 @@ class GemmaRobotApp:
         content = tk.Frame(self.root, bg=BG)
         content.pack(fill="both", expand=True, padx=16, pady=12)
 
-        # left: video
+        # LEFT: live feed
         left = tk.Frame(content, bg=BG)
-        left.pack(side="left", fill="both", expand=True)
+        left.pack(side="left", fill="both")
 
         tk.Label(left, text="LIVE FEED", bg=BG, fg=TEXT_DIM,
                  font=(FONT, 9, "bold")).pack(anchor="w")
 
-        self._video_lbl = tk.Label(left, bg="#000000",
-                                    width=480, height=360)
+        self._video_lbl = tk.Label(left, bg="#000000", width=480, height=360)
         self._video_lbl.pack(pady=(4, 4))
 
         self._instr_var = tk.StringVar(value="")
         tk.Label(left, textvariable=self._instr_var, bg=BG, fg=TEXT_DIM,
                  font=(FONT, 10), wraplength=480, justify="left",
-                 anchor="w").pack(fill="x", padx=4, pady=(0, 8))
+                 anchor="w").pack(fill="x", padx=4, pady=(0, 6))
 
-        # episode stats bar
         stats_bar = tk.Frame(left, bg=BG2, pady=8, padx=12)
         stats_bar.pack(fill="x")
-
         self._ep_lbl   = self._stat(stats_bar, "Episode", "—", 0)
         self._step_lbl = self._stat(stats_bar, "Step",    "—", 1)
         self._sr_lbl   = self._stat(stats_bar, "Success", "—", 2)
         self._inf_lbl  = self._stat(stats_bar, "Infer",   "—", 3)
 
-        # right: actions only
-        right = tk.Frame(content, bg=BG)
-        right.pack(side="left", fill="both", padx=(16, 0))
+        # MIDDLE: action bars
+        mid = tk.Frame(content, bg=BG)
+        mid.pack(side="left", fill="y", padx=(16, 0))
 
-        tk.Label(right, text="PREDICTED ACTIONS", bg=BG, fg=TEXT_DIM,
+        tk.Label(mid, text="PREDICTED ACTIONS", bg=BG, fg=TEXT_DIM,
                  font=(FONT, 9, "bold")).pack(anchor="w")
 
-        self._action_frame = tk.Frame(right, bg=BG2, pady=8, padx=12)
+        self._action_frame = tk.Frame(mid, bg=BG2, pady=8, padx=12)
         self._action_frame.pack(fill="x", pady=(4, 0))
 
         self._action_bars = {}
         for i, k in enumerate(["x", "y", "z", "roll", "pitch", "yaw", "grip"]):
             self._action_bars[k] = self._action_row(self._action_frame, k, i)
+
+        # RIGHT: episode gallery
+        right = tk.Frame(content, bg=BG)
+        right.pack(side="left", fill="both", expand=True, padx=(16, 0))
+
+        hdr = tk.Frame(right, bg=BG)
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="EPISODE GALLERY", bg=BG, fg=TEXT_DIM,
+                 font=(FONT, 9, "bold")).pack(side="left")
+        self._gallery_play_btn = tk.Button(hdr, text="▶", bg=BG3, fg=TEXT,
+                                            font=(FONT, 10), relief="flat",
+                                            padx=6, pady=1, cursor="hand2",
+                                            command=self._gallery_toggle_play)
+        self._gallery_play_btn.pack(side="right")
+        tk.Button(hdr, text="+", bg=BG3, fg=TEXT_DIM, font=(FONT, 10),
+                  relief="flat", padx=4, pady=1, cursor="hand2",
+                  command=self._gallery_faster).pack(side="right")
+        self._gallery_speed_lbl = tk.Label(hdr, text="5fps", bg=BG,
+                                            fg=TEXT_DIM, font=(FONT, 9))
+        self._gallery_speed_lbl.pack(side="right", padx=(0, 2))
+        tk.Button(hdr, text="−", bg=BG3, fg=TEXT_DIM, font=(FONT, 10),
+                  relief="flat", padx=4, pady=1, cursor="hand2",
+                  command=self._gallery_slower).pack(side="right")
+
+        # episode list
+        list_frame = tk.Frame(right, bg=BG2)
+        list_frame.pack(fill="x", pady=(4, 0))
+
+        self._gallery_list = tk.Listbox(
+            list_frame, bg=BG2, fg=TEXT, font=("SF Mono", 11),
+            relief="flat", selectbackground=BG3, selectforeground=ACCENT,
+            height=6, activestyle="none",
+        )
+        self._gallery_list.pack(side="left", fill="both", expand=True, padx=4, pady=4)
+        list_sb = ttk.Scrollbar(list_frame, command=self._gallery_list.yview)
+        list_sb.pack(side="right", fill="y")
+        self._gallery_list.config(yscrollcommand=list_sb.set)
+        self._gallery_list.bind("<<ListboxSelect>>", self._on_gallery_select)
+
+        # gallery video player
+        playback_hdr = tk.Frame(right, bg=BG)
+        playback_hdr.pack(fill="x", pady=(10, 0))
+        tk.Label(playback_hdr, text="PLAYBACK", bg=BG, fg=TEXT_DIM,
+                 font=(FONT, 9, "bold")).pack(side="left")
+        self._gallery_weave_lbl = tk.Label(playback_hdr, text="", bg=BG,
+                                            fg=ACCENT, font=(FONT, 9),
+                                            cursor="hand2")
+        self._gallery_weave_lbl.pack(side="right", padx=(0, 4))
+        self._gallery_lbl = tk.Label(right, bg="#000000",
+                                      width=380, height=285)
+        self._gallery_lbl.pack(pady=(4, 0))
+
+        self._gallery_info = tk.Label(right, text="Select an episode to play",
+                                       bg=BG, fg=TEXT_DIM, font=(FONT, 10))
+        self._gallery_info.pack(anchor="w", padx=4, pady=(4, 0))
 
     def _stat(self, parent, label, value, col):
         f = tk.Frame(parent, bg=BG2)
@@ -390,7 +445,6 @@ class GemmaRobotApp:
         val_lbl = tk.Label(parent, text="  0.0000", bg=BG2, fg=TEXT,
                             font=("SF Mono", 11), width=9, anchor="e")
         val_lbl.grid(row=row, column=1, padx=(4, 8))
-
         canvas = tk.Canvas(parent, bg=BG3, height=12, width=160,
                             highlightthickness=0)
         canvas.grid(row=row, column=2, sticky="ew", pady=2)
@@ -409,8 +463,7 @@ class GemmaRobotApp:
             url = m.group()
             link_tag = f"link_{id(url)}_{self._log.index('end')}"
             self._log.insert("end", url, (tag, link_tag))
-            self._log.tag_config(link_tag, foreground=ACCENT,
-                                  underline=True)
+            self._log.tag_config(link_tag, foreground=ACCENT, underline=True)
             self._log.tag_bind(link_tag, "<Button-1>",
                                lambda e, u=url: webbrowser.open(u))
             self._log.tag_bind(link_tag, "<Enter>",
@@ -428,6 +481,28 @@ class GemmaRobotApp:
         url = _fetch_server_url()
         self._q.put((self._url_var.set, (url,), {}))
 
+    def _update_url_mask(self):
+        url = self._url_var.get()
+        if len(url) > 16 and not self._url_editing:
+            masked = url[:8] + "•••" + url[-6:]
+        else:
+            masked = url if url else "https://"
+        self._url_mask_lbl.config(text=masked)
+
+    def _toggle_url_edit(self):
+        if self._url_editing:
+            self._url_entry.pack_forget()
+            self._url_mask_lbl.pack(side="left")
+            self._url_edit_btn.config(text="✎")
+            self._url_editing = False
+            self._update_url_mask()
+        else:
+            self._url_mask_lbl.pack_forget()
+            self._url_entry.pack(side="left")
+            self._url_entry.focus_set()
+            self._url_edit_btn.config(text="✓")
+            self._url_editing = True
+
     def _set_status(self, text, color):
         self._status_lbl.config(text=text)
         self._status_dot.config(fg=color)
@@ -438,89 +513,113 @@ class GemmaRobotApp:
         img = img.resize((480, 360), PILImage.BILINEAR)
         photo = ImageTk.PhotoImage(img)
         self._video_lbl.config(image=photo, width=480, height=360)
-        self._video_lbl._photo = photo   # prevent GC
+        self._video_lbl._photo = photo
 
     def _update_actions(self, actions):
-        # actions: (1, horizon, 7+)
         a = actions[0, 0, :7]
         keys = ["x", "y", "z", "roll", "pitch", "yaw", "grip"]
         for i, k in enumerate(keys):
             v = float(a[i])
             self._action_bars[k]["val"].config(text=f"{v:+.4f}")
-            # bar: map [-0.3, 0.3] → width
             c = self._action_bars[k]["canvas"]
             c.delete("all")
             mid = 80
             bar_w = min(abs(v) / 0.3 * 75, 75)
             color = ACCENT if v >= 0 else "#ff79c6"
             x0 = mid if v >= 0 else mid - bar_w
-            c.create_rectangle(x0, 2, x0 + bar_w, 10, fill=color,
-                                outline="")
+            c.create_rectangle(x0, 2, x0 + bar_w, 10, fill=color, outline="")
 
-    # ── server status / restart ───────────────────────────────────────────────
+    # ── gallery ───────────────────────────────────────────────────────────────
 
-    def _on_check_status(self):
-        self._check_btn.config(state="disabled", text="⟳  Checking…")
-        threading.Thread(target=self._check_status_thread, daemon=True).start()
+    def _add_episode_to_gallery(self, ep_data: dict):
+        """Called from eval thread via queue. ep_data has ep/seed/success/steps/frames/instruction."""
+        self._past_episodes.append(ep_data)
+        ep   = ep_data["ep"]
+        succ = "✓" if ep_data["success"] else "✗"
+        color = GREEN if ep_data["success"] else RED
+        label = f"  Ep {ep:2d}  {succ}  {ep_data['steps']:3d} steps  —  {ep_data['instruction'][:28]}"
+        self._gallery_list.insert("end", label)
+        self._gallery_list.itemconfig("end", fg=color)
+        # auto-select and play the latest episode
+        idx = len(self._past_episodes) - 1
+        self._gallery_list.selection_clear(0, "end")
+        self._gallery_list.selection_set(idx)
+        self._gallery_list.see(idx)
+        self._load_gallery_episode(idx)
 
-    def _check_status_thread(self):
-        def q(fn, *a, **kw): self._q.put((fn, a, kw))
-        url = self._url_var.get().strip().rstrip("/")
-        try:
-            r = requests.get(f"{url}/control/status", timeout=8)
-            r.raise_for_status()
-            s = r.json()
-            running = s.get("running", False)
-            env = (s.get("env") or "").split("/")[-1] or "—"
-            steps = s.get("episode_steps") or 0
-            uptime = int(s.get("uptime_seconds") or 0)
-            mins, secs = divmod(uptime, 60)
-            sim_ready = s.get("sim_ready", False)
+    def _on_gallery_select(self, event):
+        sel = self._gallery_list.curselection()
+        if not sel:
+            return
+        self._load_gallery_episode(sel[0])
 
-            if running and sim_ready:
-                dot_color = GREEN
-                status_text = f"Server: UP  |  env={env}  step={steps}  uptime={mins}m{secs:02d}s"
-            elif running:
-                dot_color = YELLOW
-                status_text = f"Server: starting…  uptime={mins}m{secs:02d}s"
-            else:
-                dot_color = RED
-                status_text = "Server: DOWN"
+    def _load_gallery_episode(self, idx: int):
+        import webbrowser
+        if idx < 0 or idx >= len(self._past_episodes):
+            return
+        ep = self._past_episodes[idx]
+        self._gallery_frames = ep["frames"]
+        self._gallery_frame_idx = 0
+        succ = "✓ success" if ep["success"] else "✗ failed"
+        self._gallery_info.config(
+            text=f"Ep {ep['ep']}  {succ}  {ep['steps']} steps  |  {ep['instruction'][:40]}"
+        )
+        # weave link
+        weave_url = ep.get("weave_url") or self._weave_project_url
+        if weave_url:
+            self._gallery_weave_lbl.config(text="⬡ View in Weave ↗")
+            self._gallery_weave_lbl.bind("<Button-1>", lambda e, u=weave_url: webbrowser.open(u))
+        else:
+            self._gallery_weave_lbl.config(text="")
+            self._gallery_weave_lbl.unbind("<Button-1>")
+        self._gallery_playing = True
+        self._gallery_play_btn.config(text="⏸")
+        self._gallery_tick()
 
-            q(self._srv_status_dot.config, fg=dot_color)
-            q(self._srv_status_var.set, status_text)
-            q(self._log_msg, f"[status] {status_text}", "dim")
-        except Exception as e:
-            q(self._srv_status_dot.config, fg=RED)
-            q(self._srv_status_var.set, "Server: unreachable")
-            q(self._log_msg, f"[status] {e}", "err")
-        q(self._check_btn.config, state="normal", text="⟳  Check Status")
+    def _gallery_tick(self):
+        if not self._gallery_frames or not self._gallery_playing:
+            return
+        from PIL import Image as PILImage, ImageTk
+        frame = self._gallery_frames[self._gallery_frame_idx % len(self._gallery_frames)]
+        img = PILImage.fromarray(frame)
+        img = img.resize((380, 285), PILImage.BILINEAR)
+        photo = ImageTk.PhotoImage(img)
+        self._gallery_lbl.config(image=photo, width=380, height=285)
+        self._gallery_lbl._photo = photo
+        self._gallery_frame_idx = (self._gallery_frame_idx + 1) % len(self._gallery_frames)
+        delay = max(50, 1000 // self._gallery_fps)
+        self._gallery_after_id = self.root.after(delay, self._gallery_tick)
 
-    def _on_restart_server(self):
-        self._restart_btn.config(state="disabled", text="↺  Restarting…")
-        self._srv_status_dot.config(fg=YELLOW)
-        self._srv_status_var.set("Server: restarting…")
-        threading.Thread(target=self._restart_server_thread, daemon=True).start()
+    def _gallery_slower(self):
+        fps_steps = [1, 2, 3, 5, 8, 10, 15, 20, 30]
+        idx = next((i for i, v in enumerate(fps_steps) if v >= self._gallery_fps), len(fps_steps) - 1)
+        if idx > 0:
+            self._gallery_fps = fps_steps[idx - 1]
+            self._gallery_speed_lbl.config(text=f"{self._gallery_fps}fps")
 
-    def _restart_server_thread(self):
-        def q(fn, *a, **kw): self._q.put((fn, a, kw))
-        url = self._url_var.get().strip().rstrip("/")
-        q(self._log_msg, "[restart] Sending restart to control server…", "dim")
-        try:
-            r = requests.post(f"{url}/control/restart", timeout=30)
-            r.raise_for_status()
-            s = r.json()
-            running = s.get("running", False)
-            dot_color = GREEN if running else YELLOW
-            status_text = f"Server: {'restarted ✓' if running else 'starting…'}"
-            q(self._srv_status_dot.config, fg=dot_color)
-            q(self._srv_status_var.set, status_text)
-            q(self._log_msg, f"[restart] {status_text}  pid={s.get('restarted_pid')}", "ok")
-        except Exception as e:
-            q(self._srv_status_dot.config, fg=RED)
-            q(self._srv_status_var.set, "Server: restart failed")
-            q(self._log_msg, f"[restart] failed: {e}", "err")
-        q(self._restart_btn.config, state="normal", text="↺  Restart Server")
+    def _gallery_faster(self):
+        fps_steps = [1, 2, 3, 5, 8, 10, 15, 20, 30]
+        idx = next((i for i, v in enumerate(fps_steps) if v >= self._gallery_fps), len(fps_steps) - 1)
+        if idx < len(fps_steps) - 1:
+            self._gallery_fps = fps_steps[idx + 1]
+            self._gallery_speed_lbl.config(text=f"{self._gallery_fps}fps")
+
+    def _gallery_toggle_play(self):
+        if not self._gallery_frames:
+            return
+        self._gallery_playing = not self._gallery_playing
+        if self._gallery_playing:
+            self._gallery_play_btn.config(text="⏸")
+            self._gallery_tick()
+        else:
+            self._gallery_play_btn.config(text="▶")
+            if self._gallery_after_id:
+                self.root.after_cancel(self._gallery_after_id)
+
+    # ── next episode ──────────────────────────────────────────────────────────
+
+    def _on_next_episode(self):
+        self._skip_ep_event.set()
 
     # ── setup env ─────────────────────────────────────────────────────────────
 
@@ -542,7 +641,6 @@ class GemmaRobotApp:
         q(self._log_msg, "\n── Setting up conda env ──", "hi")
         q(self._set_status, "Setting up…", YELLOW)
 
-        # find conda
         conda = None
         for c in [
             os.path.expanduser("~/miniconda3/bin/conda"),
@@ -556,7 +654,6 @@ class GemmaRobotApp:
                 break
 
         if not conda:
-            # try PATH
             r = subprocess.run(["which", "conda"], capture_output=True, text=True)
             if r.returncode == 0:
                 conda = r.stdout.strip()
@@ -570,8 +667,6 @@ class GemmaRobotApp:
             return
 
         q(self._log_msg, f"Found conda: {conda}", "dim")
-
-        # check if env exists
         env_name = "mlx_robot"
         r = subprocess.run([conda, "env", "list"], capture_output=True, text=True)
         env_exists = env_name in r.stdout
@@ -590,7 +685,6 @@ class GemmaRobotApp:
                 return
             q(self._log_msg, "  Created.", "ok")
 
-        # find pip in env
         pip = None
         for p in [
             os.path.expanduser(f"~/miniconda3/envs/{env_name}/bin/pip"),
@@ -609,7 +703,7 @@ class GemmaRobotApp:
 
         req_file = HERE / "requirements.txt"
         if req_file.exists():
-            q(self._log_msg, f"Installing from requirements.txt…", "dim")
+            q(self._log_msg, "Installing from requirements.txt…", "dim")
             install_cmd = [pip, "install", "-r", str(req_file)]
         else:
             packages = [
@@ -627,10 +721,38 @@ class GemmaRobotApp:
             return
 
         q(self._log_msg, "All packages installed.", "ok")
-        q(self._log_msg, f"\nEnv '{env_name}' is ready.\nRelaunch the app using:\n  conda activate {env_name} && python app.py",
+        q(self._log_msg,
+          f"\nEnv '{env_name}' is ready.\nRelaunch the app using:\n  conda activate {env_name} && python app.py",
           "hi")
         q(self._set_status, "Env Ready", GREEN)
         done(True)
+
+    # ── auto setup check ──────────────────────────────────────────────────────
+
+    def _auto_setup_check(self):
+        """On startup: if mlx_robot env is missing, auto-trigger setup."""
+        import subprocess
+        conda = None
+        for c in [
+            os.path.expanduser("~/miniconda3/bin/conda"),
+            os.path.expanduser("~/anaconda3/bin/conda"),
+            os.path.expanduser("~/miniforge3/bin/conda"),
+            os.path.expanduser("~/opt/miniconda3/bin/conda"),
+            "/opt/homebrew/bin/conda",
+        ]:
+            if os.path.isfile(c):
+                conda = c
+                break
+        if not conda:
+            r = subprocess.run(["which", "conda"], capture_output=True, text=True)
+            if r.returncode == 0:
+                conda = r.stdout.strip()
+        if not conda:
+            return
+        r = subprocess.run([conda, "env", "list"], capture_output=True, text=True)
+        if "mlx_robot" not in r.stdout:
+            self._q.put((self._log_msg, ("mlx_robot env not found — running auto setup…",), {"tag": "hi"}))
+            self._q.put((self._on_setup_env, (), {}))
 
     # ── run/stop ──────────────────────────────────────────────────────────────
 
@@ -639,12 +761,14 @@ class GemmaRobotApp:
             self._stop_event.set()
             self._running = False
             self._run_btn.config(text="⏳  Stopping…", bg=BG3, state="disabled")
-            # poll until the eval thread fully exits, then re-enable
+            self._next_btn.config(state="disabled")
             self.root.after(200, self._poll_thread_done)
         else:
             self._stop_event.clear()
+            self._skip_ep_event.clear()
             self._running = True
             self._run_btn.config(text="■  Stop", bg=RED)
+            self._next_btn.config(state="normal", fg=TEXT)
             t = threading.Thread(target=self._eval_thread, daemon=True)
             t.start()
             self._eval_thread_ref = t
@@ -655,23 +779,23 @@ class GemmaRobotApp:
             self.root.after(200, self._poll_thread_done)
         else:
             self._run_btn.config(text="▶  Run Eval", bg=ACCENT, state="normal")
+            self._next_btn.config(state="disabled", fg=TEXT_DIM)
 
     # ── eval thread ───────────────────────────────────────────────────────────
 
     def _eval_thread(self):
         def q(fn, *a, **kw): self._q.put((fn, a, kw))
 
-        url    = self._url_var.get().strip()
-        n_eps  = int(self._ep_var.get() or 5)
-        seed   = int(self._seed_var.get() or 42)
-        task   = self._task_var.get()
+        url     = self._url_var.get().strip()
+        n_eps   = int(self._ep_var.get() or 5)
+        seed    = int(self._seed_var.get() or 42)
+        task    = self._task_var.get()
         n_steps = 8
         n_diff  = int(self._diff_var.get() or 4)
 
         q(self._log_msg, f"Connecting to {url} …", "dim")
         q(self._set_status, "Connecting…", YELLOW)
 
-        # ping
         try:
             client = SimClient(url)
             info = client.ping()
@@ -681,17 +805,16 @@ class GemmaRobotApp:
             q(self._log_msg, f"Connection failed: {e}", "err")
             q(self._set_status, "Disconnected", RED)
             q(self._run_btn.config, text="▶  Run Eval", bg=ACCENT, state="normal")
+            q(self._next_btn.config, state="disabled", fg=TEXT_DIM)
             self._running = False
             return
 
-        # load model (once)
         if self._vla is None:
             q(self._log_msg, "Loading GemmaVLA…", "dim")
             q(self._set_status, "Loading model…", YELLOW)
             try:
                 from gemma_vla import GemmaVLA
 
-                # prefer bundled weights (inside .app Resources or sibling dirs)
                 weights_candidates = [
                     HERE / "gr00t_weights_mlx",
                     HERE.parent / "gr00t_weights_mlx",
@@ -705,11 +828,12 @@ class GemmaRobotApp:
                 llm_dir     = next((p for p in llm_candidates if p.exists() and any(p.iterdir())), None)
 
                 if weights_dir and llm_dir:
-                    q(self._log_msg, f"Using bundled weights", "dim")
+                    q(self._log_msg, "Using bundled weights", "dim")
                     self._vla = GemmaVLA.from_exported(
                         weights_dir=str(weights_dir),
                         mlx_llm_path=str(llm_dir),
                         n_diffusion_steps=4,
+                        dtype=COMPUTE_DTYPE,
                     )
                 else:
                     q(self._log_msg, "Bundled weights not found, downloading from HF…", "dim")
@@ -720,6 +844,7 @@ class GemmaRobotApp:
                         mlx_llm_path=str(HERE / "gr00t_llm_mlx"),
                         hf_token=True,
                         n_diffusion_steps=4,
+                        dtype=COMPUTE_DTYPE,
                     )
                 q(self._log_msg, "Model ready ✓", "ok")
                 q(self._set_status, "Ready", GREEN)
@@ -729,7 +854,7 @@ class GemmaRobotApp:
                 self._running = False
                 return
 
-        # ── weave init ────────────────────────────────────────────────────────
+        # weave init
         weave_log_ep = None
         try:
             api_key = os.environ.get("WANDB_API_KEY", "")
@@ -737,7 +862,11 @@ class GemmaRobotApp:
                 q(self._log_msg, "WANDB_API_KEY not set — skipping weave logging", "dim")
             else:
                 import weave as _weave
-                _weave.init("gemma-robot")
+                wc = _weave.init("gemma-robot")
+                try:
+                    self._weave_project_url = f"https://wandb.ai/{wc.entity}/{wc.project}/weave"
+                except Exception:
+                    self._weave_project_url = None
 
                 @_weave.op
                 def _log_ep(ep, seed, instruction, success, steps, elapsed_s, video_path):
@@ -747,15 +876,16 @@ class GemmaRobotApp:
                         from moviepy import VideoFileClip
                     return {
                         "episode": ep, "seed": seed, "instruction": instruction,
-                        "success": success, "steps": steps, "elapsed_s": round(elapsed_s, 2),
+                        "success": success, "steps": steps,
+                        "elapsed_s": round(elapsed_s, 2),
                         "video": VideoFileClip(video_path),
                     }
 
                 weave_log_ep = _log_ep
-                q(self._log_msg, "Weave logging → gemma-robot", "ok")
+                link = self._weave_project_url or "wandb.ai"
+                q(self._log_msg, f"Weave logging → {link}", "ok")
         except Exception as e:
             q(self._log_msg, f"Weave init failed: {e}", "dim")
-            weave_log_ep = None
 
         successes = []
 
@@ -763,6 +893,7 @@ class GemmaRobotApp:
             if self._stop_event.is_set():
                 break
 
+            self._skip_ep_event.clear()
             ep_seed = seed + ep * 1000
             q(self._log_msg, f"\n── ep {ep+1}/{n_eps}  seed={ep_seed}", "hi")
             q(self._ep_lbl.config, text=f"{ep+1}/{n_eps}")
@@ -776,15 +907,17 @@ class GemmaRobotApp:
                 )
             except Exception as e:
                 q(self._log_msg, f"Reset failed: {e}", "err")
-                break
+                continue
 
             obs = result["obs"]
             done = False
             success = False
             step = 0
             ep_frames = []
+            instruction = "pick up the object"
+            t_ep_start = time.time()
 
-            while not done and not self._stop_event.is_set():
+            while not done and not self._stop_event.is_set() and not self._skip_ep_event.is_set():
                 image, robot_state, instruction, img_arr = obs_to_inputs(obs)
 
                 ep_frames.append(img_arr.astype(np.uint8))
@@ -801,7 +934,6 @@ class GemmaRobotApp:
                 dt = time.time() - t0
 
                 action = format_action(raw, n_steps)
-
                 q(self._update_actions, raw)
                 q(self._inf_lbl.config, text=f"{dt*1000:.0f}ms")
 
@@ -815,17 +947,33 @@ class GemmaRobotApp:
                 done    = result["done"]
                 success = result["success"]
                 step    = result["episode_steps"]
-
                 q(self._step_lbl.config, text=str(step))
+
+            skipped = self._skip_ep_event.is_set()
+            elapsed = time.time() - t_ep_start
 
             successes.append(success)
             sr = sum(successes) / len(successes)
             color = "ok" if success else "err"
+            skip_note = "  [skipped]" if skipped else ""
             q(self._log_msg,
-              f"  done  steps={step}  success={success}  sr={sr:.0%}", color)
+              f"  done  steps={step}  success={success}  sr={sr:.0%}{skip_note}", color)
             q(self._sr_lbl.config, text=f"{sr:.0%}")
 
-            # ── log video to weave ────────────────────────────────────────────
+            # add to gallery (non-blocking — runs in main thread via queue)
+            if ep_frames:
+                ep_data = {
+                    "ep": ep + 1,
+                    "seed": ep_seed,
+                    "success": success,
+                    "steps": step,
+                    "frames": ep_frames,
+                    "instruction": instruction,
+                    "weave_url": self._weave_project_url,
+                }
+                q(self._add_episode_to_gallery, ep_data)
+
+            # weave logging
             if weave_log_ep and ep_frames:
                 try:
                     from moviepy.editor import ImageSequenceClip
@@ -834,7 +982,7 @@ class GemmaRobotApp:
                         from moviepy import ImageSequenceClip
                     except Exception:
                         ImageSequenceClip = None
-                if weave_log_ep and ImageSequenceClip is not None:
+                if ImageSequenceClip is not None:
                     try:
                         video_path = f"/tmp/gr00t_ep{ep+1}_seed{ep_seed}.mp4"
                         ImageSequenceClip(list(ep_frames), fps=10).write_videofile(
@@ -842,7 +990,7 @@ class GemmaRobotApp:
                         )
                         weave_log_ep(
                             ep=ep + 1, seed=ep_seed, instruction=instruction,
-                            success=success, steps=step, elapsed_s=0.0,
+                            success=success, steps=step, elapsed_s=elapsed,
                             video_path=video_path,
                         )
                         q(self._log_msg, "  → logged to weave", "dim")
@@ -851,8 +999,8 @@ class GemmaRobotApp:
 
         q(self._log_msg, "\nEval complete.", "hi")
         q(self._set_status, "Done", GREEN)
+        q(self._next_btn.config, state="disabled", fg=TEXT_DIM)
         self._running = False
-        # flush all pending Metal GPU work before the thread exits
         try:
             import mlx.core as mx
             mx.synchronize()
@@ -875,7 +1023,7 @@ class GemmaRobotApp:
 if __name__ == "__main__":
     root = tk.Tk()
     try:
-        root.tk.call("tk", "scaling", 2.0)    # Retina
+        root.tk.call("tk", "scaling", 2.0)
     except Exception:
         pass
     app = GemmaRobotApp(root)

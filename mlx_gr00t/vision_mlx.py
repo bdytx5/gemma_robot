@@ -80,7 +80,7 @@ class SiglipEncoderLayer(nn.Module):
 # ---------------------------------------------------------------------------
 
 class SiglipVisionEncoder(nn.Module):
-    def __init__(self, hidden_size=1152, num_heads=16, intermediate_size=4304,
+    def __init__(self, hidden_size=1152, num_heads=18, intermediate_size=4304,
                  num_layers=27, image_size=384, patch_size=14, eps=1e-6):
         super().__init__()
         self.hidden_size = hidden_size
@@ -184,7 +184,7 @@ class MLP1Projector(nn.Module):
 class EagleVisionMLX(nn.Module):
     """Complete vision pipeline: SigLIP + pixel_shuffle + mlp1."""
 
-    def __init__(self, hidden_size=1152, num_heads=16, intermediate_size=4304,
+    def __init__(self, hidden_size=1152, num_heads=18, intermediate_size=4304,
                  num_layers=27, image_size=384, patch_size=14,
                  downsample_ratio=0.5, mlp_out_dim=640):
         super().__init__()
@@ -203,7 +203,7 @@ class EagleVisionMLX(nn.Module):
         Returns:
             (B, num_img_tokens, mlp_out_dim)
         """
-        x = pixel_values.astype(mx.bfloat16)
+        x = pixel_values.astype(getattr(self, "_compute_dtype", mx.float16))
         vit_embeds = self.encoder(x)
         vit_embeds = pixel_shuffle(vit_embeds, self.downsample_ratio)
         return self.mlp1(vit_embeds).astype(mx.float32)
@@ -278,7 +278,7 @@ def convert_vision_weights(state_dict):
     return mlx_weights
 
 
-def build_vision_mlx(state_dict, eagle_config):
+def build_vision_mlx(state_dict, eagle_config, dtype: str = "float16"):
     """Build MLX vision encoder from PyTorch state dict and Eagle config.
 
     Args:
@@ -290,10 +290,13 @@ def build_vision_mlx(state_dict, eagle_config):
     """
     vc = eagle_config.vision_config if hasattr(eagle_config, 'vision_config') else eagle_config
     hidden_size = vc.hidden_size       # 1152
-    num_heads = vc.num_attention_heads  # 16
+    # Eagle config may report 16 heads but SigLIP-So400M uses 18 (hidden_size/head_dim=1152/64=18)
+    num_heads = vc.num_attention_heads
+    if hidden_size % num_heads != 0 or (hidden_size // num_heads) not in (48, 64, 72, 96):
+        num_heads = hidden_size // 64   # fallback: derive from standard head_dim=64
     intermediate = vc.intermediate_size  # 4304
     num_layers = vc.num_hidden_layers   # 27
-    image_size = vc.image_size          # 384
+    image_size = getattr(vc, 'image_size', 378)   # 378 = 27*14
     patch_size = vc.patch_size          # 14
 
     downsample_ratio = getattr(eagle_config, 'downsample_ratio', 0.5)
@@ -313,24 +316,26 @@ def build_vision_mlx(state_dict, eagle_config):
     weights = convert_vision_weights(state_dict)
     model.load_weights(list(weights.items()))
 
-    # Convert all parameters to float16 for 2x bandwidth savings
+    _dtype = getattr(mx, dtype)
     import mlx.utils
-    params = mlx.utils.tree_map(lambda x: x.astype(mx.bfloat16) if x.dtype == mx.float32 else x,
+    params = mlx.utils.tree_map(lambda x: x.astype(_dtype) if x.dtype == mx.float32 else x,
                                  model.parameters())
     model.load_weights(list(mlx.utils.tree_flatten(params)))
+    model._compute_dtype = _dtype
 
     n_params = sum(v.size for _, v in mlx.utils.tree_flatten(model.parameters()))
-    print(f"  MLX vision loaded: {n_params:,} parameters ({n_params * 2 / 1e9:.2f} GB float16)")
+    bytes_per = {"float16": 2, "bfloat16": 2, "float32": 4}.get(dtype, 2)
+    print(f"  MLX vision loaded: {n_params:,} parameters ({n_params * bytes_per / 1e9:.2f} GB {dtype})")
 
     return model
 
 
-def build_vision_mlx_from_exported(safetensors_path: str, meta: dict):
+def build_vision_mlx_from_exported(safetensors_path: str, meta: dict, dtype: str = "float16"):
     """Load vision model from pre-exported MLX safetensors (no PyTorch needed)."""
     import mlx.utils
 
     hidden_size      = 1152
-    num_heads        = 16
+    num_heads        = 18   # 1152 / 64 = 18 heads (was wrong at 16)
     intermediate     = 4304
     num_layers       = 27
     image_size       = meta["image_size"]
@@ -345,10 +350,13 @@ def build_vision_mlx_from_exported(safetensors_path: str, meta: dict):
         downsample_ratio=downsample_ratio, mlp_out_dim=mlp_out,
     )
 
+    _dtype = getattr(mx, dtype)
     weights = mx.load(safetensors_path)
-    weights = {k: v.astype(mx.bfloat16) if v.dtype == mx.float16 else v for k, v in weights.items()}
+    weights = {k: v.astype(_dtype) for k, v in weights.items()}
     model.load_weights(list(weights.items()))
+    model._compute_dtype = _dtype
 
     n_params = sum(v.size for _, v in mlx.utils.tree_flatten(model.parameters()))
-    print(f"  Vision loaded from exported: {n_params:,} params ({n_params * 2 / 1e9:.2f} GB bfloat16)")
+    bytes_per = {"float16": 2, "bfloat16": 2, "float32": 4}.get(dtype, 2)
+    print(f"  Vision loaded from exported: {n_params:,} params ({n_params * bytes_per / 1e9:.2f} GB {dtype})")
     return model

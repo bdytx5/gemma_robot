@@ -180,15 +180,25 @@ def run_eval(
     from gemma_vla import GemmaVLA
     hf_tok = hf_token or True
     print(f"[mlx_eval] Loading GemmaVLA (n_diffusion_steps={n_diffusion_steps}) ...")
-    vla = GemmaVLA.from_pretrained(
-        gr00t_repo=gr00t_ckpt,
-        checkpoint=checkpoint,
-        eagle_repo=eagle_repo,
-        mlx_llm_path=mlx_llm_path,
-        hf_token=hf_tok,
-        n_diffusion_steps=n_diffusion_steps,
-    )
-    print(vla)
+
+    weights_dir = MLX_DIR / "gr00t_weights_mlx"
+    llm_dir     = Path(mlx_llm_path)
+    if (weights_dir / "meta.json").exists() and llm_dir.exists() and any(llm_dir.iterdir()):
+        print(f"[mlx_eval] Using local exported weights: {weights_dir}")
+        vla = GemmaVLA.from_exported(
+            weights_dir=str(weights_dir),
+            mlx_llm_path=str(llm_dir),
+            n_diffusion_steps=n_diffusion_steps,
+        )
+    else:
+        vla = GemmaVLA.from_pretrained(
+            gr00t_repo=gr00t_ckpt,
+            checkpoint=checkpoint,
+            eagle_repo=eagle_repo,
+            mlx_llm_path=mlx_llm_path,
+            hf_token=hf_tok,
+            n_diffusion_steps=n_diffusion_steps,
+        )
 
     cv2.namedWindow("Robot View", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Robot View", 640, 480)
@@ -266,10 +276,13 @@ def run_eval(
             action = format_action(raw_actions, n_action_steps)
             result = client.step(action)
 
-            obs        = result["obs"]
+            if "error" in result or "done" not in result:
+                print(f"\n  [server error] {result}")
+                break
             done       = result["done"]
             success    = result["success"]
             step_count = result["episode_steps"]
+            obs        = result.get("obs", obs)
 
             print(f"  step {step_count:3d}  infer={dt_infer:.0f}ms  success={success}", end="\r")
 
