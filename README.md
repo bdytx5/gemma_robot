@@ -56,7 +56,7 @@ Starting from the Stage 1 checkpoint, the LLM is fully unfrozen while SigLIP sta
 
 ### Stage 3 — Balanced Multi-Dataset Robot Training
 
-The Stage 2 VLM checkpoint feeds into the GR00T training pipeline with a 32-layer DiT action head attached. The **full VLA is unfrozen** (LLM + projector + DiT; only SigLIP stays frozen) and trained on a diverse mixture of 8 base datasets plus up to 8 optional NVIDIA single-panda sim tasks (whichever are present on disk). All datasets sampled at equal weight (mix_ratio 1.0):
+The Stage 2 VLM checkpoint feeds into the GR00T training pipeline. The pretrained DiT action head and action projector are loaded directly from `nvidia/GR00T-N1.6-fractal`, with a learned projection layer bridging the embedding dimension gap between Gemma3's hidden size (1152) and the GR00T action head (2048). The **full VLA is unfrozen** (LLM + projector + DiT; only SigLIP stays frozen) and trained on a diverse mixture of 8 base datasets plus up to 8 optional NVIDIA single-panda sim tasks. All datasets sampled at equal weight (mix_ratio 1.0):
 
 | Dataset | Embodiment |
 |---|---|
