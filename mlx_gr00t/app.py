@@ -274,6 +274,32 @@ class GemmaRobotApp:
                                      command=self._on_setup_env)
         self._setup_btn.grid(row=0, column=7)
 
+        # ---- server control row ----
+        srv = tk.Frame(self.root, bg=BG2, pady=6, padx=16)
+        srv.pack(fill="x")
+
+        self._srv_status_dot = tk.Label(srv, text="●", bg=BG2, fg=TEXT_DIM,
+                                         font=(FONT, 12))
+        self._srv_status_dot.pack(side="left", padx=(0, 4))
+
+        self._srv_status_var = tk.StringVar(value="Server: unknown")
+        tk.Label(srv, textvariable=self._srv_status_var, bg=BG2, fg=TEXT_DIM,
+                 font=(FONT, 10)).pack(side="left", padx=(0, 16))
+
+        self._check_btn = tk.Button(srv, text="⟳  Check Status", bg=BG3,
+                                     fg=TEXT, font=(FONT, 10),
+                                     relief="flat", padx=10, pady=3,
+                                     cursor="hand2",
+                                     command=self._on_check_status)
+        self._check_btn.pack(side="left", padx=(0, 8))
+
+        self._restart_btn = tk.Button(srv, text="↺  Restart Server", bg=BG3,
+                                       fg=TEXT, font=(FONT, 10),
+                                       relief="flat", padx=10, pady=3,
+                                       cursor="hand2",
+                                       command=self._on_restart_server)
+        self._restart_btn.pack(side="left")
+
         sep2 = tk.Frame(self.root, bg=BG3, height=1)
         sep2.pack(fill="x")
 
@@ -430,6 +456,71 @@ class GemmaRobotApp:
             x0 = mid if v >= 0 else mid - bar_w
             c.create_rectangle(x0, 2, x0 + bar_w, 10, fill=color,
                                 outline="")
+
+    # ── server status / restart ───────────────────────────────────────────────
+
+    def _on_check_status(self):
+        self._check_btn.config(state="disabled", text="⟳  Checking…")
+        threading.Thread(target=self._check_status_thread, daemon=True).start()
+
+    def _check_status_thread(self):
+        def q(fn, *a, **kw): self._q.put((fn, a, kw))
+        url = self._url_var.get().strip().rstrip("/")
+        try:
+            r = requests.get(f"{url}/control/status", timeout=8)
+            r.raise_for_status()
+            s = r.json()
+            running = s.get("running", False)
+            env = (s.get("env") or "").split("/")[-1] or "—"
+            steps = s.get("episode_steps") or 0
+            uptime = int(s.get("uptime_seconds") or 0)
+            mins, secs = divmod(uptime, 60)
+            sim_ready = s.get("sim_ready", False)
+
+            if running and sim_ready:
+                dot_color = GREEN
+                status_text = f"Server: UP  |  env={env}  step={steps}  uptime={mins}m{secs:02d}s"
+            elif running:
+                dot_color = YELLOW
+                status_text = f"Server: starting…  uptime={mins}m{secs:02d}s"
+            else:
+                dot_color = RED
+                status_text = "Server: DOWN"
+
+            q(self._srv_status_dot.config, fg=dot_color)
+            q(self._srv_status_var.set, status_text)
+            q(self._log_msg, f"[status] {status_text}", "dim")
+        except Exception as e:
+            q(self._srv_status_dot.config, fg=RED)
+            q(self._srv_status_var.set, "Server: unreachable")
+            q(self._log_msg, f"[status] {e}", "err")
+        q(self._check_btn.config, state="normal", text="⟳  Check Status")
+
+    def _on_restart_server(self):
+        self._restart_btn.config(state="disabled", text="↺  Restarting…")
+        self._srv_status_dot.config(fg=YELLOW)
+        self._srv_status_var.set("Server: restarting…")
+        threading.Thread(target=self._restart_server_thread, daemon=True).start()
+
+    def _restart_server_thread(self):
+        def q(fn, *a, **kw): self._q.put((fn, a, kw))
+        url = self._url_var.get().strip().rstrip("/")
+        q(self._log_msg, "[restart] Sending restart to control server…", "dim")
+        try:
+            r = requests.post(f"{url}/control/restart", timeout=30)
+            r.raise_for_status()
+            s = r.json()
+            running = s.get("running", False)
+            dot_color = GREEN if running else YELLOW
+            status_text = f"Server: {'restarted ✓' if running else 'starting…'}"
+            q(self._srv_status_dot.config, fg=dot_color)
+            q(self._srv_status_var.set, status_text)
+            q(self._log_msg, f"[restart] {status_text}  pid={s.get('restarted_pid')}", "ok")
+        except Exception as e:
+            q(self._srv_status_dot.config, fg=RED)
+            q(self._srv_status_var.set, "Server: restart failed")
+            q(self._log_msg, f"[restart] failed: {e}", "err")
+        q(self._restart_btn.config, state="normal", text="↺  Restart Server")
 
     # ── setup env ─────────────────────────────────────────────────────────────
 
