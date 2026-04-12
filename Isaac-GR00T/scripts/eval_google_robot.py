@@ -140,14 +140,14 @@ def kill_server(server: subprocess.Popen):
     print("[eval] Server process cleaned up.")
 
 
-def run_env(env_name: str, port: int, n_episodes: int, video_dir: str, result_json: str, seed: int = 42) -> dict:
+def run_env(env_name: str, port: int, n_episodes: int, video_dir: str, result_json: str, seed: int = 42, n_envs: int = 1) -> dict:
     rollout_python = str(SIMPLER_PYTHON) if SIMPLER_PYTHON.exists() else str(VENV_PYTHON)
     cmd = [
         rollout_python,
         str(ROLLOUT_SCRIPT),
         "--env_name", env_name,
         "--n_episodes", str(n_episodes),
-        "--n_envs", "1",
+        "--n_envs", str(n_envs),
         "--n_action_steps", "8",
         "--max_episode_steps", "300",
         "--policy_client_host", "127.0.0.1",
@@ -244,6 +244,8 @@ def main():
     parser.add_argument("--checkpoint_path", required=True, help="Path to GR00T checkpoint dir")
     parser.add_argument("--step", type=int, default=None, help="Training step (auto-detected from checkpoint name if not set)")
     parser.add_argument("--n_episodes", type=int, default=5, help="Episodes per env")
+    parser.add_argument("--n_envs", type=int, default=1, help="Parallel envs per task")
+    parser.add_argument("--no_server", action="store_true", help="Skip launching policy server (use existing one)")
     parser.add_argument("--port", type=int, default=5556, help="Policy server port")
     parser.add_argument("--wandb_project", default="finetune-gr00t-n1d6", help="W&B project name")
     parser.add_argument("--video_root", default="/tmp/gr00t_eval_videos", help="Root dir for video output")
@@ -269,12 +271,16 @@ def main():
     print(f"[eval] Step: {step}  |  Envs: {len(args.envs)}  |  Episodes/env: {args.n_episodes}")
     print(f"[eval] Videos → {video_root}")
 
-    server = start_server(args.checkpoint_path, args.port, "OXE_GOOGLE", device=args.device)
-    try:
+    if args.no_server:
+        server = None
+        print(f"[eval] Using existing policy server on port {args.port}")
+    else:
+        server = start_server(args.checkpoint_path, args.port, "OXE_GOOGLE", device=args.device)
         print(f"[eval] Waiting for server on port {args.port}...")
         if not wait_for_server(args.port, timeout=180, server_proc=server):
             raise RuntimeError("Policy server did not come up in time (crashed or timed out)")
         print("[eval] Server ready.")
+    try:
 
         all_results = []
         for env_idx, env_name in enumerate(args.envs):
@@ -283,7 +289,7 @@ def main():
             result_json = os.path.join(env_video_dir, "result.json")
             env_seed = args.seed + env_idx  # deterministic per-env seed
             try:
-                result = run_env(env_name, args.port, args.n_episodes, env_video_dir, result_json, seed=env_seed)
+                result = run_env(env_name, args.port, args.n_episodes, env_video_dir, result_json, seed=env_seed, n_envs=args.n_envs)
             except subprocess.TimeoutExpired:
                 result = {"env_name": env_name, "success_rate": None, "error": "timeout"}
             result["step"] = step
@@ -309,8 +315,9 @@ def main():
             log_to_wandb(good_results, video_root, step, args.wandb_project, run_name, run_id)
 
     finally:
-        print("[eval] Shutting down server...")
-        kill_server(server)
+        if server is not None:
+            print("[eval] Shutting down server...")
+            kill_server(server)
 
     rates = [r["success_rate"] for r in all_results if r.get("success_rate") is not None]
     if rates:
