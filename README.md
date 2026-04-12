@@ -58,25 +58,27 @@ Starting from the Stage 1 checkpoint, the LLM is fully unfrozen while SigLIP sta
 
 The Stage 2 VLM checkpoint feeds into the GR00T training pipeline. The pretrained DiT action head and action projector are loaded directly from `nvidia/GR00T-N1.6-fractal`, with a learned projection layer bridging the embedding dimension gap between Gemma3's hidden size (1152) and the GR00T action head (2048). The **full VLA is unfrozen** (LLM + projector + DiT; only SigLIP stays frozen) and trained on 10 datasets (3 real, 7 sim), all sampled at equal weight (mix_ratio 1.0):
 
+Fractal is upweighted to match the combined weight of all other datasets (~50% of training). Each remaining dataset gets equal weight (~5.6% each).
+
 **Real robot**
 
-| Dataset | Robot | Episodes | Frames | FPS | Resolution |
-|---|---|---|---|---|---|
-| fractal20220817 | Google Robot | 87,212 | 3.8M | 3 | 256×320 |
-| bridge\_orig | WidowX | 53,192 | 1.9M | 5 | 256×256 (4 cams) |
-| droid\_subset | Franka | 2,000 | 595K | 15 | 180×320 (wrist + 2 ext) |
+| Dataset | Robot | Episodes | Frames | FPS | Resolution | Mix ratio |
+|---|---|---|---|---|---|---|
+| fractal20220817 | Google Robot | 87,212 | 3.8M | 3 | 256×320 | 9.0 (~50%) |
+| bridge\_orig | WidowX | 53,192 | 1.9M | 5 | 256×256 (4 cams) | 1.0 |
+| droid\_subset | Franka | 2,000 | 595K | 15 | 180×320 (wrist + 2 ext) | 1.0 |
 
 **Sim**
 
-| Dataset | Robot | Episodes | Frames |
-|---|---|---|---|
-| robocasa\_mg\_gr00t\_300 | Panda + Omron | 7,200 | 2.1M |
-| nvidia-panda CloseDrawer | Panda | 3,000 | 619K |
-| nvidia-panda OpenDrawer | Panda | 3,000 | 674K |
-| nvidia-panda PnPCabToCounter | Panda | 3,011 | 1.0M |
-| nvidia-panda PnPCounterToCab | Panda | 3,000 | 778K |
-| nvidia-panda PnPCounterToMicrowave | Panda | 3,000 | 1.3M |
-| nvidia-panda PnPMicrowaveToCounter | Panda | 2,998 | 944K |
+| Dataset | Robot | Episodes | Frames | Mix ratio |
+|---|---|---|---|---|
+| robocasa\_mg\_gr00t\_300 | Panda + Omron | 7,200 | 2.1M | 1.0 |
+| nvidia-panda CloseDrawer | Panda | 3,000 | 619K | 1.0 |
+| nvidia-panda OpenDrawer | Panda | 3,000 | 674K | 1.0 |
+| nvidia-panda PnPCabToCounter | Panda | 3,011 | 1.0M | 1.0 |
+| nvidia-panda PnPCounterToCab | Panda | 3,000 | 778K | 1.0 |
+| nvidia-panda PnPCounterToMicrowave | Panda | 3,000 | 1.3M | 1.0 |
+| nvidia-panda PnPMicrowaveToCounter | Panda | 2,998 | 944K | 1.0 |
 
 20k steps, lr 1e-4. Output: `output/balanced-from-270m/`.
 
