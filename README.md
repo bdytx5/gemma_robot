@@ -84,7 +84,7 @@ The Stage 3 checkpoint is fine-tuned back on Fractal alone (lr 5e-5, 5k steps). 
 
 ## Evaluation
 
-Checkpoints are evaluated in [SimplerEnv](https://github.com/simpler-env/SimplerEnv), a GPU-accelerated physics sim that replicates the Google Robot tabletop setup at 10–15× real-time speed. 200 episodes per task, randomized object positions and seeds. An episode is a success only if the robot completes the task within the step budget (504 steps). The eval server runs as a FastAPI process exposed via ngrok; the Mac client (this repo) drives the loop using MLX inference locally.
+Checkpoints are evaluated in [SimplerEnv](https://github.com/simpler-env/SimplerEnv), a GPU-accelerated physics sim that replicates the Google Robot tabletop setup. 50 episodes per task, randomized object positions and seeds. An episode is a success only if the robot completes the task within the step budget (504 steps). The eval server runs as a FastAPI process exposed via ngrok; the Mac client (this repo) drives the loop using MLX inference locally.
 
 50 episodes per task, 300 total. Comparing NVIDIA's stock `GR00T-N1.6-fractal` checkpoint against this project's Gemma3-270M trained model:
 
