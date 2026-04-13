@@ -222,8 +222,12 @@ class GemmaRobotApp:
         # episode cache
         self._cache_path = Path.home() / ".cache" / "gemma_robot" / "episodes.pkl"
 
+        # busy flags for label-buttons
+        self._setup_busy   = False
+        self._restart_busy = False
+
         self._build_ui()
-        self.root.after(50, self._drain_queue)
+        self.root.after(16, self._drain_queue)
         threading.Thread(target=self._auto_setup_check, daemon=True).start()
 
         sys.stdout = _StreamRedirect(self, "")
@@ -272,9 +276,9 @@ class GemmaRobotApp:
         self._url_entry = tk.Entry(url_frame, textvariable=self._url_var, bg=BG3,
                                     fg=TEXT, insertbackground=TEXT, relief="flat",
                                     font=(FONT, 12), width=38)
-        self._url_edit_btn = tk.Button(url_frame, text="✎", bg=BG3, fg=ACCENT,
-                                        font=(FONT, 10), relief="flat", padx=6, pady=2,
-                                        cursor="hand2", command=self._toggle_url_edit)
+        self._url_edit_btn = self._lbtn(url_frame, "✎", BG3, ACCENT,
+                                        font=(FONT, 10), padx=6, pady=2,
+                                        command=self._toggle_url_edit)
         self._url_edit_btn.pack(side="left", padx=(4, 0))
         self._url_var.trace_add("write", lambda *_: self._q.put((self._update_url_mask, (), {})))
 
@@ -299,33 +303,24 @@ class GemmaRobotApp:
                  insertbackground=TEXT, relief="flat",
                  font=(FONT, 12), width=3).grid(row=0, column=7, padx=(0, 16))
 
-        self._run_btn = tk.Button(cfg, text="▶  Run Eval", bg=ACCENT,
-                                   fg="#000000", font=(FONT, 12, "bold"),
-                                   relief="flat", padx=16, pady=4,
-                                   cursor="hand2", command=self._on_run_stop)
+        self._run_btn = self._lbtn(cfg, "▶  Run Eval", ACCENT, "#000000",
+                                    font=(FONT, 12, "bold"), padx=16, pady=4,
+                                    command=self._on_run_stop)
         self._run_btn.grid(row=0, column=8, padx=(0, 6))
 
-        self._next_btn = tk.Button(cfg, text="⏭  Next Ep", bg=BG3,
-                                    fg=TEXT_DIM, font=(FONT, 11),
-                                    relief="flat", padx=10, pady=4,
-                                    cursor="hand2", state="disabled",
-                                    disabledforeground="#555555",
-                                    highlightthickness=0, borderwidth=0,
-                                    command=self._on_next_episode)
+        self._next_btn = self._lbtn(cfg, "⏭  Next Ep", BG3, "#555555",
+                                     font=(FONT, 11), padx=10, pady=4,
+                                     command=self._on_next_episode_guarded)
         self._next_btn.grid(row=0, column=9, padx=(0, 6))
 
-        self._setup_btn = tk.Button(cfg, text="⚙  Setup Env", bg=BG3,
-                                     fg="#000000", font=(FONT, 11),
-                                     relief="flat", padx=12, pady=4,
-                                     cursor="hand2",
-                                     command=self._on_setup_env)
+        self._setup_btn = self._lbtn(cfg, "⚙  Setup Env", BG3, TEXT_DIM,
+                                      font=(FONT, 11), padx=12, pady=4,
+                                      command=self._on_setup_env)
         self._setup_btn.grid(row=0, column=10, padx=(0, 6))
 
-        self._restart_btn = tk.Button(cfg, text="⟳  Restart Sim", bg=BG3,
-                                      fg=YELLOW, font=(FONT, 11),
-                                      relief="flat", padx=12, pady=4,
-                                      cursor="hand2",
-                                      command=self._on_restart_sim)
+        self._restart_btn = self._lbtn(cfg, "⟳  Restart Sim", BG3, YELLOW,
+                                        font=(FONT, 11), padx=12, pady=4,
+                                        command=self._on_restart_sim)
         self._restart_btn.grid(row=0, column=11)
 
         tk.Label(cfg, text="Task", bg=BG2, fg=TEXT_DIM,
@@ -469,20 +464,17 @@ class GemmaRobotApp:
         hdr.pack(fill="x")
         tk.Label(hdr, text="EPISODE GALLERY", bg=BG, fg=TEXT_DIM,
                  font=(FONT, 9, "bold")).pack(side="left")
-        self._gallery_play_btn = tk.Button(hdr, text="▶", bg=BG3, fg=TEXT,
-                                            font=(FONT, 10), relief="flat",
-                                            padx=6, pady=1, cursor="hand2",
-                                            command=self._gallery_toggle_play)
+        self._gallery_play_btn = self._lbtn(hdr, "▶", BG3, TEXT,
+                                             font=(FONT, 10), padx=6, pady=1,
+                                             command=self._gallery_toggle_play)
         self._gallery_play_btn.pack(side="right")
-        tk.Button(hdr, text="+", bg=BG3, fg=TEXT_DIM, font=(FONT, 10),
-                  relief="flat", padx=4, pady=1, cursor="hand2",
-                  command=self._gallery_faster).pack(side="right")
+        self._lbtn(hdr, "+", BG3, TEXT_DIM, font=(FONT, 10), padx=4, pady=1,
+                   command=self._gallery_faster).pack(side="right")
         self._gallery_speed_lbl = tk.Label(hdr, text="5fps", bg=BG,
                                             fg=TEXT_DIM, font=(FONT, 9))
         self._gallery_speed_lbl.pack(side="right", padx=(0, 2))
-        tk.Button(hdr, text="−", bg=BG3, fg=TEXT_DIM, font=(FONT, 10),
-                  relief="flat", padx=4, pady=1, cursor="hand2",
-                  command=self._gallery_slower).pack(side="right")
+        self._lbtn(hdr, "−", BG3, TEXT_DIM, font=(FONT, 10), padx=4, pady=1,
+                   command=self._gallery_slower).pack(side="right")
         tk.Label(hdr, text="Cycle", bg=BG, fg=TEXT_DIM,
                  font=(FONT, 9)).pack(side="right", padx=(0, 2))
         tk.Checkbutton(hdr, variable=self._gallery_cycle_var,
@@ -496,9 +488,9 @@ class GemmaRobotApp:
                        fg=ACCENT, activeforeground=ACCENT,
                        relief="flat", cursor="hand2",
                        command=self._refresh_gallery_list).pack(side="right", padx=(0, 8))
-        tk.Button(hdr, text="📂 Load prev", bg=BG3, fg=TEXT_DIM,
-                  font=(FONT, 9), relief="flat", padx=6, pady=1, cursor="hand2",
-                  command=self._load_episodes_from_cache).pack(side="right", padx=(0, 8))
+        self._lbtn(hdr, "📂 Load prev", BG3, TEXT_DIM, font=(FONT, 9),
+                   padx=6, pady=1,
+                   command=self._load_episodes_from_cache).pack(side="right", padx=(0, 8))
 
         # episode list
         list_frame = tk.Frame(right, bg=BG2)
@@ -531,6 +523,19 @@ class GemmaRobotApp:
         self._gallery_info = tk.Label(right, text="Select an episode to play",
                                        bg=BG, fg=TEXT_DIM, font=(FONT, 10))
         self._gallery_info.pack(anchor="w", padx=4, pady=(4, 0))
+
+    # ── label-button helper (avoids macOS Aqua white-render + focus-click) ──────
+
+    def _lbtn(self, parent, text, bg, fg, font=None, padx=10, pady=4,
+              command=None, **kw):
+        """A tk.Label that behaves as a button — fires on first click, honours colours."""
+        if font is None:
+            font = (FONT, 11)
+        lbl = tk.Label(parent, text=text, bg=bg, fg=fg, font=font,
+                       padx=padx, pady=pady, cursor="hand2", **kw)
+        if command:
+            lbl.bind("<Button-1>", lambda e: command())
+        return lbl
 
     def _stat(self, parent, label, value, col):
         f = tk.Frame(parent, bg=BG2)
@@ -847,7 +852,10 @@ class GemmaRobotApp:
     # ── restart sim ───────────────────────────────────────────────────────────
 
     def _on_restart_sim(self):
-        self._restart_btn.config(state="disabled", text="⟳  Restarting…", fg=TEXT_DIM)
+        if self._restart_busy:
+            return
+        self._restart_busy = True
+        self._restart_btn.config(text="⟳  Restarting…", fg=TEXT_DIM)
         threading.Thread(target=self._restart_sim_thread, daemon=True).start()
 
     def _restart_sim_thread(self):
@@ -856,7 +864,8 @@ class GemmaRobotApp:
         def done(ok, msg=""):
             color = GREEN if ok else RED
             label = "⟳  Restart Sim"
-            q(self._restart_btn.config, state="normal", text=label, fg=YELLOW)
+            self._restart_busy = False
+            q(self._restart_btn.config, text=label, fg=YELLOW)
             q(self._set_status, msg or ("Sim ready" if ok else "Restart failed"), color)
 
         url = self._url_var.get().strip()
@@ -888,7 +897,10 @@ class GemmaRobotApp:
     # ── setup env ─────────────────────────────────────────────────────────────
 
     def _on_setup_env(self):
-        self._setup_btn.config(state="disabled", text="⚙  Setting up…")
+        if self._setup_busy:
+            return
+        self._setup_busy = True
+        self._setup_btn.config(text="⚙  Setting up…", fg=TEXT_DIM)
         t = threading.Thread(target=self._setup_env_thread, daemon=True)
         t.start()
 
@@ -897,10 +909,11 @@ class GemmaRobotApp:
         def q(fn, *a, **kw): self._q.put((fn, a, kw))
 
         def done(ok):
+            self._setup_busy = False
             color = ACCENT if ok else BG3
-            q(self._setup_btn.config, state="normal",
+            q(self._setup_btn.config,
               text="✓  Env Ready" if ok else "⚙  Setup Env",
-              bg=color, fg="#000000" if ok else TEXT)
+              bg=color, fg="#000000" if ok else TEXT_DIM)
 
         q(self._log_msg, "\n── Setting up conda env ──", "hi")
         q(self._set_status, "Setting up…", YELLOW)
@@ -1020,19 +1033,23 @@ class GemmaRobotApp:
 
     # ── run/stop ──────────────────────────────────────────────────────────────
 
+    def _on_next_episode_guarded(self):
+        if self._running:
+            self._skip_ep_event.set()
+
     def _on_run_stop(self):
         if self._running:
             self._stop_event.set()
             self._running = False
-            self._run_btn.config(text="⏳  Stopping…", bg=BG3, state="disabled")
-            self._next_btn.config(state="disabled")
+            self._run_btn.config(text="⏳  Stopping…", bg=BG3, fg=TEXT_DIM)
+            self._next_btn.config(fg="#333333")
             self.root.after(200, self._poll_thread_done)
         else:
             self._stop_event.clear()
             self._skip_ep_event.clear()
             self._running = True
-            self._run_btn.config(text="■  Stop", bg=RED)
-            self._next_btn.config(state="normal", fg=TEXT)
+            self._run_btn.config(text="■  Stop", bg=RED, fg=TEXT)
+            self._next_btn.config(fg=TEXT)
             t = threading.Thread(target=self._eval_thread, daemon=True)
             t.start()
             self._eval_thread_ref = t
@@ -1042,8 +1059,8 @@ class GemmaRobotApp:
         if t and t.is_alive():
             self.root.after(200, self._poll_thread_done)
         else:
-            self._run_btn.config(text="▶  Run Eval", bg=ACCENT, state="normal")
-            self._next_btn.config(state="disabled", fg=TEXT_DIM)
+            self._run_btn.config(text="▶  Run Eval", bg=ACCENT, fg="#000000")
+            self._next_btn.config(fg="#555555")
 
     # ── eval thread ───────────────────────────────────────────────────────────
 
@@ -1071,8 +1088,8 @@ class GemmaRobotApp:
         except Exception as e:
             q(self._log_msg, f"Connection failed: {e}", "err")
             q(self._set_status, "Disconnected", RED)
-            q(self._run_btn.config, text="▶  Run Eval", bg=ACCENT, state="normal")
-            q(self._next_btn.config, state="disabled", fg=TEXT_DIM)
+            q(self._run_btn.config, text="▶  Run Eval", bg=ACCENT, fg="#000000")
+            q(self._next_btn.config, fg="#555555")
             self._running = False
             return
 
@@ -1309,7 +1326,7 @@ class GemmaRobotApp:
 
         q(self._log_msg, "\nEval complete.", "hi")
         q(self._set_status, "Done", GREEN)
-        q(self._next_btn.config, state="disabled", fg=TEXT_DIM)
+        q(self._next_btn.config, fg="#555555")
         self._running = False
         try:
             import mlx.core as mx
@@ -1410,7 +1427,7 @@ class GemmaRobotApp:
                 fn(*args, **kwargs)
         except queue.Empty:
             pass
-        self.root.after(50, self._drain_queue)
+        self.root.after(16, self._drain_queue)
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
