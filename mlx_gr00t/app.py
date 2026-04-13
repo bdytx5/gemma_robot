@@ -1175,8 +1175,25 @@ class GemmaRobotApp:
 
                 if reborn_mode:
                     # ── reb0rn: load from mlx_reb0rn with official preprocessing ──
-                    reborn_dir = HERE.parent / "mlx_reb0rn"
+                    # Search several candidates — path differs between dev (running
+                    # from mlx_gr00t/) and bundled app (app bundle is inside dist/).
                     import importlib.util
+                    _reb0rn_candidates = [
+                        HERE.parent / "mlx_reb0rn",                        # dev
+                        HERE.parent.parent.parent.parent / "mlx_reb0rn",   # inside .app bundle
+                        Path.home() / "gemma_robot" / "mlx_reb0rn",        # install.sh default
+                    ]
+                    reborn_dir = next(
+                        (p for p in _reb0rn_candidates if (p / "gemma_vla.py").exists()),
+                        None,
+                    )
+                    if reborn_dir is None:
+                        searched = "\n  ".join(str(p) for p in _reb0rn_candidates)
+                        raise FileNotFoundError(
+                            f"mlx_reb0rn not found. Searched:\n  {searched}\n"
+                            "Run install.sh to set up the environment."
+                        )
+                    log.info("reb0rn dir: %s", reborn_dir)
                     reborn_spec = importlib.util.spec_from_file_location(
                         "gemma_vla_reborn", reborn_dir / "gemma_vla.py"
                     )
