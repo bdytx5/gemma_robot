@@ -349,7 +349,7 @@ class GemmaRobotApp:
 
         tk.Label(cfg, text="Inference", bg=BG2, fg=TEXT_DIM,
                  font=(FONT, 11)).grid(row=1, column=8, sticky="w", padx=(12, 6), pady=(8, 0))
-        self._infer_mode_var = tk.StringVar(value="MLX (local)")
+        self._infer_mode_var = tk.StringVar(value="GPU (server)")
         self._infer_mode_cb = ttk.Combobox(cfg, textvariable=self._infer_mode_var,
                                             values=["MLX (local)", "MLX reb0rn", "GPU (server)"],
                                             font=(FONT, 11), width=13, state="readonly")
