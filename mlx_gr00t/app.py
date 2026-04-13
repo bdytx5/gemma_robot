@@ -319,7 +319,14 @@ class GemmaRobotApp:
                                      relief="flat", padx=12, pady=4,
                                      cursor="hand2",
                                      command=self._on_setup_env)
-        self._setup_btn.grid(row=0, column=10)
+        self._setup_btn.grid(row=0, column=10, padx=(0, 6))
+
+        self._restart_btn = tk.Button(cfg, text="⟳  Restart Sim", bg=BG3,
+                                      fg=YELLOW, font=(FONT, 11),
+                                      relief="flat", padx=12, pady=4,
+                                      cursor="hand2",
+                                      command=self._on_restart_sim)
+        self._restart_btn.grid(row=0, column=11)
 
         tk.Label(cfg, text="Task", bg=BG2, fg=TEXT_DIM,
                  font=(FONT, 11)).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
@@ -836,6 +843,47 @@ class GemmaRobotApp:
 
     def _on_next_episode(self):
         self._skip_ep_event.set()
+
+    # ── restart sim ───────────────────────────────────────────────────────────
+
+    def _on_restart_sim(self):
+        self._restart_btn.config(state="disabled", text="⟳  Restarting…", fg=TEXT_DIM)
+        threading.Thread(target=self._restart_sim_thread, daemon=True).start()
+
+    def _restart_sim_thread(self):
+        def q(fn, *a, **kw): self._q.put((fn, a, kw))
+
+        def done(ok, msg=""):
+            color = GREEN if ok else RED
+            label = "⟳  Restart Sim"
+            q(self._restart_btn.config, state="normal", text=label, fg=YELLOW)
+            q(self._set_status, msg or ("Sim ready" if ok else "Restart failed"), color)
+
+        url = self._url_var.get().strip()
+        if not url.startswith("http"):
+            q(self._log_msg, "No server URL set.", "err")
+            done(False, "No URL")
+            return
+
+        q(self._log_msg, "Restarting sim (may take up to 60 s)…", "hi")
+        q(self._set_status, "Restarting…", YELLOW)
+        try:
+            r = requests.post(
+                f"{url.rstrip('/')}/control/restart",
+                json={},
+                headers=NGROK_HEADERS,
+                timeout=90,
+            )
+            r.raise_for_status()
+            status = r.json()
+            sim_ready = status.get("sim_ready", False)
+            restarts  = status.get("sim_restart_count", "?")
+            q(self._log_msg,
+              f"Restart complete — sim_ready={sim_ready}  restart_count={restarts}", "ok" if sim_ready else "err")
+            done(sim_ready, "Sim ready" if sim_ready else "Sim not ready")
+        except Exception as e:
+            q(self._log_msg, f"Restart failed: {e}", "err")
+            done(False, "Restart failed")
 
     # ── setup env ─────────────────────────────────────────────────────────────
 
