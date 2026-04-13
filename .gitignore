@@ -1,3 +1,28 @@
 .claude_sessions/
 *.jsonl
 Isaac-GR00T/output/
+
+# model weights / large data
+gr00t_weights_mlx/
+gr00t_llm_mlx/
+gr00t_llm_hf/
+
+# build artifacts & caches
+__pycache__/
+build/
+dist/
+*.pyc
+*.pyo
+wandb/
+*.egg-info/
+
+# logs & results
+app_crash.log
+*_eval_results*.txt
+cuda_eval_results.txt
+
+# local config
+.pycommands
+choline.yaml
+.choline/
+ssh_*.json
