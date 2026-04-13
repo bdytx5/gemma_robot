@@ -391,7 +391,7 @@ class GemmaRobotApp:
                  font=(FONT, 11)).grid(row=1, column=8, sticky="w", padx=(12, 6), pady=(8, 0))
         self._infer_mode_var = tk.StringVar(value="GPU (server)")
         self._infer_mode_cb = ttk.Combobox(cfg, textvariable=self._infer_mode_var,
-                                            values=["MLX (local)", "MLX reb0rn", "GPU (server)"],
+                                            values=["MLX (local)", "GPU (server)"],
                                             font=(FONT, 11), width=13, state="readonly")
         self._infer_mode_cb.grid(row=1, column=9, sticky="w", pady=(8, 0))
         self._infer_mode_var.trace_add("write", self._on_infer_mode_change)
@@ -809,12 +809,7 @@ class GemmaRobotApp:
         self._update_norm_controls_state()
 
     def _update_norm_controls_state(self):
-        """Dim norm controls when reb0rn mode is active (they have no effect)."""
-        is_reborn = self._infer_mode_var.get() == "MLX reb0rn"
-        fg = TEXT_DIM if is_reborn else TEXT
-        # Walk the config frame looking for norm-related widgets — simplest: just
-        # log a note so the user knows; full widget disabling would require refs.
-        pass  # visual dimming deferred; the log message is enough
+        pass
 
     # ── dtype change ─────────────────────────────────────────────────────────
 
@@ -829,12 +824,6 @@ class GemmaRobotApp:
     def _on_norm_change(self, *_):
         """Reapply norm stats to live model when norm strategy changes. No model reload needed."""
         if self._vla is None:
-            return
-        if self._infer_mode_var.get() == "MLX reb0rn":
-            self._log_msg(
-                "reb0rn mode: norm is handled by StateActionProcessor — "
-                "state/grip dropdowns have no effect", "dim"
-            )
             return
         threading.Thread(target=self._reload_norm_stats, daemon=True).start()
 
@@ -1144,8 +1133,6 @@ class GemmaRobotApp:
         n_diff     = int(self._diff_var.get() or 4)
         infer_mode = self._infer_mode_var.get()
         gpu_mode   = infer_mode == "GPU (server)"
-        reborn_mode = infer_mode == "MLX reb0rn"
-
         q(self._log_msg, f"Connecting to {url} …", "dim")
         q(self._set_status, "Connecting…", YELLOW)
 
@@ -1166,49 +1153,28 @@ class GemmaRobotApp:
             q(self._log_msg, "GPU mode — inference runs on server, skipping local model load", "dim")
 
         if not gpu_mode and self._vla is None:
-            label = "GemmaVLA reb0rn" if reborn_mode else "GemmaVLA"
-            q(self._log_msg, f"Loading {label}…", "dim")
+            q(self._log_msg, "Loading GemmaVLA…", "dim")
             q(self._set_status, "Loading model…", YELLOW)
             try:
                 _dtype = self._dtype_var.get()
                 q(self._log_msg, f"Loading model ({_dtype})…", "dim")
 
-                if reborn_mode:
-                    # ── reb0rn: load from mlx_reb0rn with official preprocessing ──
-                    # Search several candidates — path differs between dev (running
-                    # from mlx_gr00t/) and bundled app (app bundle is inside dist/).
-                    import importlib.util
-                    _reb0rn_candidates = [
-                        HERE.parent / "mlx_reb0rn",                        # dev
-                        HERE.parent.parent.parent.parent / "mlx_reb0rn",   # inside .app bundle
-                        Path.home() / "gemma_robot" / "mlx_reb0rn",        # install.sh default
-                    ]
-                    reborn_dir = next(
-                        (p for p in _reb0rn_candidates if (p / "gemma_vla.py").exists()),
-                        None,
-                    )
-                    if reborn_dir is None:
-                        searched = "\n  ".join(str(p) for p in _reb0rn_candidates)
-                        raise FileNotFoundError(
-                            f"mlx_reb0rn not found. Searched:\n  {searched}\n"
-                            "Run install.sh to set up the environment."
-                        )
-                    log.info("reb0rn dir: %s", reborn_dir)
-                    reborn_spec = importlib.util.spec_from_file_location(
-                        "gemma_vla_reborn", reborn_dir / "gemma_vla.py"
-                    )
-                    reborn_mod = importlib.util.module_from_spec(reborn_spec)
-                    reborn_spec.loader.exec_module(reborn_mod)
-                    GemmaVLA = reborn_mod.GemmaVLA
+                from gemma_vla import GemmaVLA
 
-                    weights_dir = reborn_dir / "gr00t_weights_mlx"
-                    llm_dir     = reborn_dir / "gr00t_llm_mlx"
-                    if not (weights_dir / "meta.json").exists():
-                        raise FileNotFoundError(f"reb0rn weights not found at {weights_dir}")
-                    if not llm_dir.exists() or not any(llm_dir.iterdir()):
-                        raise FileNotFoundError(f"reb0rn LLM not found at {llm_dir}")
+                weights_candidates = [
+                    HERE / "gr00t_weights_mlx",
+                    HERE.parent / "gr00t_weights_mlx",
+                ]
+                llm_candidates = [
+                    HERE / "gr00t_llm_mlx",
+                    HERE.parent / "gr00t_llm_mlx",
+                ]
 
-                    q(self._log_msg, "Using reb0rn weights + official preprocessing", "dim")
+                weights_dir = next((p for p in weights_candidates if (p / "meta.json").exists()), None)
+                llm_dir     = next((p for p in llm_candidates if p.exists() and any(p.iterdir())), None)
+
+                if weights_dir and llm_dir:
+                    q(self._log_msg, "Using bundled weights", "dim")
                     self._vla = GemmaVLA.from_exported(
                         weights_dir=str(weights_dir),
                         mlx_llm_path=str(llm_dir),
@@ -1216,42 +1182,18 @@ class GemmaRobotApp:
                         dtype=_dtype,
                     )
                 else:
-                    # ── classic: load from this directory (mlx_gr00t) ────────────
-                    from gemma_vla import GemmaVLA
+                    q(self._log_msg, "Bundled weights not found, downloading from HF…", "dim")
+                    self._vla = GemmaVLA.from_pretrained(
+                        gr00t_repo="youngbrett48/gr00t-post-train-fractal-270m",
+                        checkpoint="checkpoint-2000",
+                        eagle_repo="youngbrett48/train_stage2_gemma3_270m.sh",
+                        mlx_llm_path=str(HERE / "gr00t_llm_mlx"),
+                        hf_token=True,
+                        n_diffusion_steps=4,
+                        dtype=_dtype,
+                    )
 
-                    weights_candidates = [
-                        HERE / "gr00t_weights_mlx",
-                        HERE.parent / "gr00t_weights_mlx",
-                    ]
-                    llm_candidates = [
-                        HERE / "gr00t_llm_mlx",
-                        HERE.parent / "gr00t_llm_mlx",
-                    ]
-
-                    weights_dir = next((p for p in weights_candidates if (p / "meta.json").exists()), None)
-                    llm_dir     = next((p for p in llm_candidates if p.exists() and any(p.iterdir())), None)
-
-                    if weights_dir and llm_dir:
-                        q(self._log_msg, "Using bundled weights", "dim")
-                        self._vla = GemmaVLA.from_exported(
-                            weights_dir=str(weights_dir),
-                            mlx_llm_path=str(llm_dir),
-                            n_diffusion_steps=4,
-                            dtype=_dtype,
-                        )
-                    else:
-                        q(self._log_msg, "Bundled weights not found, downloading from HF…", "dim")
-                        self._vla = GemmaVLA.from_pretrained(
-                            gr00t_repo="youngbrett48/gr00t-post-train-fractal-270m",
-                            checkpoint="checkpoint-2000",
-                            eagle_repo="youngbrett48/train_stage2_gemma3_270m.sh",
-                            mlx_llm_path=str(HERE / "gr00t_llm_mlx"),
-                            hf_token=True,
-                            n_diffusion_steps=4,
-                            dtype=_dtype,
-                        )
-
-                q(self._log_msg, f"{label} ready ✓", "ok")
+                q(self._log_msg, "GemmaVLA ready ✓", "ok")
                 q(self._set_status, "Ready", GREEN)
             except Exception as e:
                 q(self._log_msg, f"Model load failed: {e}", "err")
