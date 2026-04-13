@@ -60,7 +60,7 @@ FONT     = "SF Pro Display"
 # ── dtype config ──────────────────────────────────────────────────────────────
 # Controls weight storage and compute precision for all components (vision, LLM, DiT).
 # Options: "float16" | "bfloat16" | "float32"
-COMPUTE_DTYPE = "float16"
+COMPUTE_DTYPE = "bfloat16"
 
 ACTION_KEYS = ["action.x", "action.y", "action.z",
                "action.roll", "action.pitch", "action.yaw",
@@ -119,6 +119,14 @@ class SimClient:
     def step(self, action):
         r = requests.post(f"{self.base}/step",
                           data=pack({"action": action}),
+                          headers={**HEADERS, **NGROK_HEADERS}, timeout=self.timeout)
+        r.raise_for_status()
+        return unpack(r.content)
+
+    def step_cuda(self, obs):
+        """Ask server to run GPU inference + step in one round-trip."""
+        r = requests.post(f"{self.base}/step_cuda",
+                          data=pack({"obs": obs}),
                           headers={**HEADERS, **NGROK_HEADERS}, timeout=self.timeout)
         r.raise_for_status()
         return unpack(r.content)
@@ -197,10 +205,22 @@ class GemmaRobotApp:
         self._gallery_playing = False
         self._gallery_after_id = None
         self._gallery_fps = 5           # default 5fps
+        self._gallery_cycle_var = tk.BooleanVar(value=True)
+        self._gallery_current_ep_idx = 0  # which episode is loaded in the player
 
         # URL edit state
         self._url_editing = False
         self._weave_project_url = None  # set when weave inits
+
+        # dev mode
+        self._dev_mode_var = tk.BooleanVar(value=False)
+
+        # gallery filter
+        self._show_success_only_var = tk.BooleanVar(value=False)
+        self._gallery_ep_indices = []   # display_idx → _past_episodes index
+
+        # episode cache
+        self._cache_path = Path.home() / ".cache" / "gemma_robot" / "episodes.pkl"
 
         self._build_ui()
         self.root.after(50, self._drain_queue)
@@ -218,8 +238,6 @@ class GemmaRobotApp:
 
         tk.Label(top, text="GemmaRobot", bg=BG, fg=ACCENT,
                  font=(FONT, 18, "bold")).pack(side="left")
-        tk.Label(top, text="  MLX · Apple Silicon", bg=BG, fg=TEXT_DIM,
-                 font=(FONT, 12)).pack(side="left")
 
         self._status_dot = tk.Label(top, text="●", bg=BG, fg=RED,
                                      font=(FONT, 14))
@@ -228,10 +246,16 @@ class GemmaRobotApp:
                                      fg=TEXT_DIM, font=(FONT, 11))
         self._status_lbl.pack(side="right")
 
+        tk.Checkbutton(top, text="Dev", variable=self._dev_mode_var,
+                       bg=BG, fg=TEXT_DIM, activebackground=BG,
+                       activeforeground=TEXT, selectcolor=BG3,
+                       font=(FONT, 10), relief="flat", cursor="hand2",
+                       command=self._toggle_dev_mode).pack(side="right", padx=(0, 16))
+
         tk.Frame(self.root, bg=BG3, height=1).pack(fill="x")
 
         # ---- config row ----
-        cfg = tk.Frame(self.root, bg=BG2, pady=10, padx=16)
+        self._cfg_frame = cfg = tk.Frame(self.root, bg=BG2, pady=10, padx=16)
         cfg.pack(fill="x")
 
         tk.Label(cfg, text="Server URL", bg=BG2, fg=TEXT_DIM,
@@ -285,6 +309,8 @@ class GemmaRobotApp:
                                     fg=TEXT_DIM, font=(FONT, 11),
                                     relief="flat", padx=10, pady=4,
                                     cursor="hand2", state="disabled",
+                                    disabledforeground="#555555",
+                                    highlightthickness=0, borderwidth=0,
                                     command=self._on_next_episode)
         self._next_btn.grid(row=0, column=9, padx=(0, 6))
 
@@ -308,8 +334,63 @@ class GemmaRobotApp:
         self._task_var = tk.StringVar(value=TASKS[0])
         ttk.Combobox(cfg, textvariable=self._task_var, values=TASKS,
                      font=(FONT, 11), width=52,
-                     state="readonly").grid(row=1, column=1, columnspan=7,
+                     state="readonly").grid(row=1, column=1, columnspan=5,
                                             sticky="w", pady=(8, 0))
+
+        self._dtype_lbl_w = tk.Label(cfg, text="dtype", bg=BG2, fg=TEXT_DIM,
+                 font=(FONT, 11))
+        self._dtype_lbl_w.grid(row=1, column=6, sticky="w", padx=(12, 6), pady=(8, 0))
+        self._dtype_var = tk.StringVar(value=COMPUTE_DTYPE)
+        self._dtype_cb_w = ttk.Combobox(cfg, textvariable=self._dtype_var,
+                                 values=["float16", "bfloat16", "float32"],
+                                 font=(FONT, 11), width=10, state="readonly")
+        self._dtype_cb_w.grid(row=1, column=7, sticky="w", pady=(8, 0))
+        self._dtype_var.trace_add("write", self._on_dtype_change)
+
+        tk.Label(cfg, text="Inference", bg=BG2, fg=TEXT_DIM,
+                 font=(FONT, 11)).grid(row=1, column=8, sticky="w", padx=(12, 6), pady=(8, 0))
+        self._infer_mode_var = tk.StringVar(value="MLX (local)")
+        self._infer_mode_cb = ttk.Combobox(cfg, textvariable=self._infer_mode_var,
+                                            values=["MLX (local)", "MLX reb0rn", "GPU (server)"],
+                                            font=(FONT, 11), width=13, state="readonly")
+        self._infer_mode_cb.grid(row=1, column=9, sticky="w", pady=(8, 0))
+        self._infer_mode_var.trace_add("write", self._on_infer_mode_change)
+
+        # ---- norm row (dev mode only — hidden by default) ----
+        self._norm_row = tk.Frame(self.root, bg=BG2, pady=6, padx=16)
+        # NOT packed here; shown via _toggle_dev_mode
+
+        self._state_norm_var = tk.StringVar(value="min/max")
+        self._grip_norm_var  = tk.StringVar(value="min/max")
+        self._stats_src_var  = tk.StringVar(value="checkpoint")
+
+        tk.Label(self._norm_row, text="State norm", bg=BG2, fg=TEXT_DIM,
+                 font=(FONT, 11)).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Combobox(self._norm_row, textvariable=self._state_norm_var,
+                     values=["min/max", "q01/q99"],
+                     font=(FONT, 11), width=9, state="readonly").grid(
+                     row=0, column=1, sticky="w")
+        self._state_norm_var.trace_add("write", self._on_norm_change)
+
+        tk.Label(self._norm_row, text="Grip denorm", bg=BG2, fg=TEXT_DIM,
+                 font=(FONT, 11)).grid(row=0, column=2, sticky="w", padx=(20, 8))
+        ttk.Combobox(self._norm_row, textvariable=self._grip_norm_var,
+                     values=["min/max", "q01/q99"],
+                     font=(FONT, 11), width=9, state="readonly").grid(
+                     row=0, column=3, sticky="w")
+        self._grip_norm_var.trace_add("write", self._on_norm_change)
+
+        tk.Label(self._norm_row, text="Stats", bg=BG2, fg=TEXT_DIM,
+                 font=(FONT, 11)).grid(row=0, column=4, sticky="w", padx=(20, 8))
+        ttk.Combobox(self._norm_row, textvariable=self._stats_src_var,
+                     values=["checkpoint", "root"],
+                     font=(FONT, 11), width=10, state="readonly").grid(
+                     row=0, column=5, sticky="w")
+        self._stats_src_var.trace_add("write", self._on_norm_change)
+
+        # hide dtype widgets by default (dev mode)
+        self._dtype_lbl_w.grid_remove()
+        self._dtype_cb_w.grid_remove()
 
         tk.Frame(self.root, bg=BG3, height=1).pack(fill="x")
 
@@ -395,6 +476,22 @@ class GemmaRobotApp:
         tk.Button(hdr, text="−", bg=BG3, fg=TEXT_DIM, font=(FONT, 10),
                   relief="flat", padx=4, pady=1, cursor="hand2",
                   command=self._gallery_slower).pack(side="right")
+        tk.Label(hdr, text="Cycle", bg=BG, fg=TEXT_DIM,
+                 font=(FONT, 9)).pack(side="right", padx=(0, 2))
+        tk.Checkbutton(hdr, variable=self._gallery_cycle_var,
+                       bg=BG, activebackground=BG, selectcolor=BG3,
+                       fg=ACCENT, activeforeground=ACCENT,
+                       relief="flat", cursor="hand2").pack(side="right", padx=(0, 8))
+        tk.Label(hdr, text="Success only", bg=BG, fg=TEXT_DIM,
+                 font=(FONT, 9)).pack(side="right", padx=(0, 2))
+        tk.Checkbutton(hdr, variable=self._show_success_only_var,
+                       bg=BG, activebackground=BG, selectcolor=BG3,
+                       fg=ACCENT, activeforeground=ACCENT,
+                       relief="flat", cursor="hand2",
+                       command=self._refresh_gallery_list).pack(side="right", padx=(0, 8))
+        tk.Button(hdr, text="📂 Load prev", bg=BG3, fg=TEXT_DIM,
+                  font=(FONT, 9), relief="flat", padx=6, pady=1, cursor="hand2",
+                  command=self._load_episodes_from_cache).pack(side="right", padx=(0, 8))
 
         # episode list
         list_frame = tk.Frame(right, bg=BG2)
@@ -534,30 +631,36 @@ class GemmaRobotApp:
     def _add_episode_to_gallery(self, ep_data: dict):
         """Called from eval thread via queue. ep_data has ep/seed/success/steps/frames/instruction."""
         self._past_episodes.append(ep_data)
-        ep   = ep_data["ep"]
-        succ = "✓" if ep_data["success"] else "✗"
-        color = GREEN if ep_data["success"] else RED
-        label = f"  Ep {ep:2d}  {succ}  {ep_data['steps']:3d} steps  —  {ep_data['instruction'][:28]}"
-        self._gallery_list.insert("end", label)
-        self._gallery_list.itemconfig("end", fg=color)
-        # auto-select and play the latest episode
-        idx = len(self._past_episodes) - 1
-        self._gallery_list.selection_clear(0, "end")
-        self._gallery_list.selection_set(idx)
-        self._gallery_list.see(idx)
-        self._load_gallery_episode(idx)
+        self._save_episode_to_cache(ep_data)
+        self._refresh_gallery_list()
+        # auto-select and play the latest episode (look up display index)
+        actual_idx = len(self._past_episodes) - 1
+        if actual_idx in self._gallery_ep_indices:
+            display_idx = self._gallery_ep_indices.index(actual_idx)
+            self._gallery_list.selection_clear(0, "end")
+            self._gallery_list.selection_set(display_idx)
+            self._gallery_list.see(display_idx)
+            self._load_gallery_episode(actual_idx)
 
     def _on_gallery_select(self, event):
         sel = self._gallery_list.curselection()
         if not sel:
             return
-        self._load_gallery_episode(sel[0])
+        display_idx = sel[0]
+        if display_idx < len(self._gallery_ep_indices):
+            actual_idx = self._gallery_ep_indices[display_idx]
+            self._load_gallery_episode(actual_idx)
 
     def _load_gallery_episode(self, idx: int):
         import webbrowser
         if idx < 0 or idx >= len(self._past_episodes):
             return
+        # Cancel any running tick loop before starting a new one
+        if self._gallery_after_id:
+            self.root.after_cancel(self._gallery_after_id)
+            self._gallery_after_id = None
         ep = self._past_episodes[idx]
+        self._gallery_current_ep_idx = idx
         self._gallery_frames = ep["frames"]
         self._gallery_frame_idx = 0
         succ = "✓ success" if ep["success"] else "✗ failed"
@@ -580,14 +683,37 @@ class GemmaRobotApp:
         if not self._gallery_frames or not self._gallery_playing:
             return
         from PIL import Image as PILImage, ImageTk
-        frame = self._gallery_frames[self._gallery_frame_idx % len(self._gallery_frames)]
+        idx = self._gallery_frame_idx % len(self._gallery_frames)
+        frame = self._gallery_frames[idx]
         img = PILImage.fromarray(frame)
         img = img.resize((380, 285), PILImage.BILINEAR)
         photo = ImageTk.PhotoImage(img)
         self._gallery_lbl.config(image=photo, width=380, height=285)
         self._gallery_lbl._photo = photo
-        self._gallery_frame_idx = (self._gallery_frame_idx + 1) % len(self._gallery_frames)
-        delay = max(50, 1000 // self._gallery_fps)
+
+        next_frame_idx = self._gallery_frame_idx + 1
+        if next_frame_idx >= len(self._gallery_frames):
+            # Completed one full pass of this episode
+            if self._gallery_cycle_var.get() and self._gallery_ep_indices:
+                # find current position in display list and advance
+                cur = self._gallery_current_ep_idx
+                if cur in self._gallery_ep_indices:
+                    pos = self._gallery_ep_indices.index(cur)
+                else:
+                    pos = 0
+                next_pos = (pos + 1) % len(self._gallery_ep_indices)
+                next_actual = self._gallery_ep_indices[next_pos]
+                self._gallery_list.selection_clear(0, "end")
+                self._gallery_list.selection_set(next_pos)
+                self._gallery_list.see(next_pos)
+                self._load_gallery_episode(next_actual)
+                return
+            else:
+                self._gallery_frame_idx = 0
+        else:
+            self._gallery_frame_idx = next_frame_idx
+
+        delay = max(33, 1000 // self._gallery_fps)
         self._gallery_after_id = self.root.after(delay, self._gallery_tick)
 
     def _gallery_slower(self):
@@ -615,6 +741,96 @@ class GemmaRobotApp:
             self._gallery_play_btn.config(text="▶")
             if self._gallery_after_id:
                 self.root.after_cancel(self._gallery_after_id)
+
+    # ── inference mode change ─────────────────────────────────────────────────
+
+    def _on_infer_mode_change(self, *_):
+        """Invalidate cached model when inference mode changes so it reloads."""
+        if self._vla is not None:
+            self._vla = None
+            mode = self._infer_mode_var.get()
+            self._log_msg(f"inference mode → {mode}  (model will reload on next run)", "dim")
+        # Norm controls only apply to MLX classic
+        self._update_norm_controls_state()
+
+    def _update_norm_controls_state(self):
+        """Dim norm controls when reb0rn mode is active (they have no effect)."""
+        is_reborn = self._infer_mode_var.get() == "MLX reb0rn"
+        fg = TEXT_DIM if is_reborn else TEXT
+        # Walk the config frame looking for norm-related widgets — simplest: just
+        # log a note so the user knows; full widget disabling would require refs.
+        pass  # visual dimming deferred; the log message is enough
+
+    # ── dtype change ─────────────────────────────────────────────────────────
+
+    def _on_dtype_change(self, *_):
+        """Invalidate cached model when dtype changes so it reloads on next run."""
+        if self._vla is not None:
+            self._vla = None
+            self._log_msg(f"dtype → {self._dtype_var.get()}  (model will reload on next run)", "dim")
+
+    # ── norm change ───────────────────────────────────────────────────────────
+
+    def _on_norm_change(self, *_):
+        """Reapply norm stats to live model when norm strategy changes. No model reload needed."""
+        if self._vla is None:
+            return
+        if self._infer_mode_var.get() == "MLX reb0rn":
+            self._log_msg(
+                "reb0rn mode: norm is handled by StateActionProcessor — "
+                "state/grip dropdowns have no effect", "dim"
+            )
+            return
+        threading.Thread(target=self._reload_norm_stats, daemon=True).start()
+
+    def _reload_norm_stats(self):
+        """Reload statistics.json and patch self._vla norm arrays in place."""
+        q = lambda fn, *a, **kw: self._q.put((fn, a, kw))
+        try:
+            import json, numpy as np
+            from huggingface_hub import hf_hub_download
+
+            use_ckpt = self._stats_src_var.get() == "checkpoint"
+            state_use_minmax = self._state_norm_var.get() == "min/max"
+            grip_use_minmax  = self._grip_norm_var.get()  == "min/max"
+
+            stats_name = "checkpoint-2000/statistics.json" if use_ckpt else "statistics.json"
+            try:
+                stats_path = hf_hub_download(
+                    "youngbrett48/gr00t-post-train-fractal-270m", stats_name, token=True)
+            except Exception:
+                stats_path = hf_hub_download(
+                    "youngbrett48/gr00t-post-train-fractal-270m", "statistics.json", token=True)
+
+            with open(stats_path) as f:
+                all_stats = json.load(f)
+            s = all_stats.get("oxe_google", {}).get("state", {})
+            a = all_stats.get("oxe_google", {}).get("action", {})
+
+            state_keys = ["x", "y", "z", "rx", "ry", "rz", "rw", "gripper"]
+            if state_use_minmax:
+                self._vla._state_min = np.array([s[k]["min"][0] for k in state_keys], dtype=np.float32)
+                self._vla._state_max = np.array([s[k]["max"][0] for k in state_keys], dtype=np.float32)
+            else:
+                self._vla._state_min = np.array([s[k]["q01"][0] for k in state_keys], dtype=np.float32)
+                self._vla._state_max = np.array([s[k]["q99"][0] for k in state_keys], dtype=np.float32)
+
+            ms_keys = ["x", "y", "z", "roll", "pitch", "yaw"]
+            self._vla._action_mean = np.array([a[k]["mean"][0] for k in ms_keys], dtype=np.float32)
+            self._vla._action_std  = np.array([a[k]["std"][0]  for k in ms_keys], dtype=np.float32)
+            if grip_use_minmax:
+                self._vla._action_grip_min = np.float32(a["gripper"]["min"][0])
+                self._vla._action_grip_max = np.float32(a["gripper"]["max"][0])
+            else:
+                self._vla._action_grip_min = np.float32(a["gripper"]["q01"][0])
+                self._vla._action_grip_max = np.float32(a["gripper"]["q99"][0])
+
+            q(self._log_msg,
+              f"Norm updated: state={'min/max' if state_use_minmax else 'q01/q99'}  "
+              f"grip={'min/max' if grip_use_minmax else 'q01/q99'}  "
+              f"stats={'ckpt' if use_ckpt else 'root'}", "dim")
+        except Exception as e:
+            q(self._log_msg, f"Norm reload failed: {e}", "err")
 
     # ── next episode ──────────────────────────────────────────────────────────
 
@@ -786,12 +1002,15 @@ class GemmaRobotApp:
     def _eval_thread(self):
         def q(fn, *a, **kw): self._q.put((fn, a, kw))
 
-        url     = self._url_var.get().strip()
-        n_eps   = int(self._ep_var.get() or 5)
-        seed    = int(self._seed_var.get() or 42)
-        task    = self._task_var.get()
-        n_steps = 8
-        n_diff  = int(self._diff_var.get() or 4)
+        url        = self._url_var.get().strip()
+        n_eps      = int(self._ep_var.get() or 5)
+        seed       = int(self._seed_var.get() or 42)
+        task       = self._task_var.get()
+        n_steps    = 8
+        n_diff     = int(self._diff_var.get() or 4)
+        infer_mode = self._infer_mode_var.get()
+        gpu_mode   = infer_mode == "GPU (server)"
+        reborn_mode = infer_mode == "MLX reb0rn"
 
         q(self._log_msg, f"Connecting to {url} …", "dim")
         q(self._set_status, "Connecting…", YELLOW)
@@ -809,44 +1028,79 @@ class GemmaRobotApp:
             self._running = False
             return
 
-        if self._vla is None:
-            q(self._log_msg, "Loading GemmaVLA…", "dim")
+        if gpu_mode:
+            q(self._log_msg, "GPU mode — inference runs on server, skipping local model load", "dim")
+
+        if not gpu_mode and self._vla is None:
+            label = "GemmaVLA reb0rn" if reborn_mode else "GemmaVLA"
+            q(self._log_msg, f"Loading {label}…", "dim")
             q(self._set_status, "Loading model…", YELLOW)
             try:
-                from gemma_vla import GemmaVLA
+                _dtype = self._dtype_var.get()
+                q(self._log_msg, f"Loading model ({_dtype})…", "dim")
 
-                weights_candidates = [
-                    HERE / "gr00t_weights_mlx",
-                    HERE.parent / "gr00t_weights_mlx",
-                ]
-                llm_candidates = [
-                    HERE / "gr00t_llm_mlx",
-                    HERE.parent / "gr00t_llm_mlx",
-                ]
+                if reborn_mode:
+                    # ── reb0rn: load from mlx_reb0rn with official preprocessing ──
+                    reborn_dir = HERE.parent / "mlx_reb0rn"
+                    import importlib.util
+                    reborn_spec = importlib.util.spec_from_file_location(
+                        "gemma_vla_reborn", reborn_dir / "gemma_vla.py"
+                    )
+                    reborn_mod = importlib.util.module_from_spec(reborn_spec)
+                    reborn_spec.loader.exec_module(reborn_mod)
+                    GemmaVLA = reborn_mod.GemmaVLA
 
-                weights_dir = next((p for p in weights_candidates if (p / "meta.json").exists()), None)
-                llm_dir     = next((p for p in llm_candidates if p.exists() and any(p.iterdir())), None)
+                    weights_dir = reborn_dir / "gr00t_weights_mlx"
+                    llm_dir     = reborn_dir / "gr00t_llm_mlx"
+                    if not (weights_dir / "meta.json").exists():
+                        raise FileNotFoundError(f"reb0rn weights not found at {weights_dir}")
+                    if not llm_dir.exists() or not any(llm_dir.iterdir()):
+                        raise FileNotFoundError(f"reb0rn LLM not found at {llm_dir}")
 
-                if weights_dir and llm_dir:
-                    q(self._log_msg, "Using bundled weights", "dim")
+                    q(self._log_msg, "Using reb0rn weights + official preprocessing", "dim")
                     self._vla = GemmaVLA.from_exported(
                         weights_dir=str(weights_dir),
                         mlx_llm_path=str(llm_dir),
                         n_diffusion_steps=4,
-                        dtype=COMPUTE_DTYPE,
+                        dtype=_dtype,
                     )
                 else:
-                    q(self._log_msg, "Bundled weights not found, downloading from HF…", "dim")
-                    self._vla = GemmaVLA.from_pretrained(
-                        gr00t_repo="youngbrett48/gr00t-post-train-fractal-270m",
-                        checkpoint="checkpoint-2000",
-                        eagle_repo="youngbrett48/train_stage2_gemma3_270m.sh",
-                        mlx_llm_path=str(HERE / "gr00t_llm_mlx"),
-                        hf_token=True,
-                        n_diffusion_steps=4,
-                        dtype=COMPUTE_DTYPE,
-                    )
-                q(self._log_msg, "Model ready ✓", "ok")
+                    # ── classic: load from this directory (mlx_gr00t) ────────────
+                    from gemma_vla import GemmaVLA
+
+                    weights_candidates = [
+                        HERE / "gr00t_weights_mlx",
+                        HERE.parent / "gr00t_weights_mlx",
+                    ]
+                    llm_candidates = [
+                        HERE / "gr00t_llm_mlx",
+                        HERE.parent / "gr00t_llm_mlx",
+                    ]
+
+                    weights_dir = next((p for p in weights_candidates if (p / "meta.json").exists()), None)
+                    llm_dir     = next((p for p in llm_candidates if p.exists() and any(p.iterdir())), None)
+
+                    if weights_dir and llm_dir:
+                        q(self._log_msg, "Using bundled weights", "dim")
+                        self._vla = GemmaVLA.from_exported(
+                            weights_dir=str(weights_dir),
+                            mlx_llm_path=str(llm_dir),
+                            n_diffusion_steps=4,
+                            dtype=_dtype,
+                        )
+                    else:
+                        q(self._log_msg, "Bundled weights not found, downloading from HF…", "dim")
+                        self._vla = GemmaVLA.from_pretrained(
+                            gr00t_repo="youngbrett48/gr00t-post-train-fractal-270m",
+                            checkpoint="checkpoint-2000",
+                            eagle_repo="youngbrett48/train_stage2_gemma3_270m.sh",
+                            mlx_llm_path=str(HERE / "gr00t_llm_mlx"),
+                            hf_token=True,
+                            n_diffusion_steps=4,
+                            dtype=_dtype,
+                        )
+
+                q(self._log_msg, f"{label} ready ✓", "ok")
                 q(self._set_status, "Ready", GREEN)
             except Exception as e:
                 q(self._log_msg, f"Model load failed: {e}", "err")
@@ -925,23 +1179,31 @@ class GemmaRobotApp:
                 q(self._instr_var.set, instruction)
 
                 t0 = time.time()
-                raw = self._vla.get_action(
-                    image=image,
-                    robot_state=robot_state,
-                    instruction=instruction,
-                    n_diffusion_steps=n_diff,
-                )
-                dt = time.time() - t0
-
-                action = format_action(raw, n_steps)
-                q(self._update_actions, raw)
-                q(self._inf_lbl.config, text=f"{dt*1000:.0f}ms")
-
-                try:
-                    result = client.step(action)
-                except Exception as e:
-                    q(self._log_msg, f"Step failed: {e}", "err")
-                    break
+                if gpu_mode:
+                    # Single round-trip: server runs GPU inference + steps env
+                    try:
+                        result = client.step_cuda(obs)
+                    except Exception as e:
+                        q(self._log_msg, f"step_cuda failed: {e}", "err")
+                        break
+                    dt = time.time() - t0
+                    q(self._inf_lbl.config, text=f"{dt*1000:.0f}ms  (GPU)")
+                else:
+                    raw = self._vla.get_action(
+                        image=image,
+                        robot_state=robot_state,
+                        instruction=instruction,
+                        n_diffusion_steps=n_diff,
+                    )
+                    dt = time.time() - t0
+                    action = format_action(raw, n_steps)
+                    q(self._update_actions, raw)
+                    q(self._inf_lbl.config, text=f"{dt*1000:.0f}ms")
+                    try:
+                        result = client.step(action)
+                    except Exception as e:
+                        q(self._log_msg, f"Step failed: {e}", "err")
+                        break
 
                 obs     = result["obs"]
                 done    = result["done"]
@@ -1006,6 +1268,90 @@ class GemmaRobotApp:
             mx.synchronize()
         except Exception:
             pass
+
+    # ── dev mode ──────────────────────────────────────────────────────────────
+
+    def _toggle_dev_mode(self):
+        on = self._dev_mode_var.get()
+        if on:
+            self._norm_row.pack(fill="x", after=self._cfg_frame)
+            self._dtype_lbl_w.grid()
+            self._dtype_cb_w.grid()
+        else:
+            self._norm_row.pack_forget()
+            self._dtype_lbl_w.grid_remove()
+            self._dtype_cb_w.grid_remove()
+
+    # ── gallery list refresh (respects success-only filter) ───────────────────
+
+    def _refresh_gallery_list(self):
+        self._gallery_list.delete(0, "end")
+        self._gallery_ep_indices = []
+        success_only = self._show_success_only_var.get()
+        for i, ep_data in enumerate(self._past_episodes):
+            if success_only and not ep_data["success"]:
+                continue
+            self._gallery_ep_indices.append(i)
+            succ  = "✓" if ep_data["success"] else "✗"
+            color = GREEN if ep_data["success"] else RED
+            label = f"  Ep {ep_data['ep']:2d}  {succ}  {ep_data['steps']:3d} steps  —  {ep_data['instruction'][:28]}"
+            self._gallery_list.insert("end", label)
+            self._gallery_list.itemconfig("end", fg=color)
+
+    # ── episode cache ─────────────────────────────────────────────────────────
+
+    def _save_episode_to_cache(self, ep_data: dict):
+        """Append one episode (with downsampled frames) to disk cache."""
+        try:
+            import pickle
+            self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+            # Subsample frames to keep cache lean (max 60 frames per episode)
+            frames = ep_data.get("frames", [])
+            if len(frames) > 60:
+                step = len(frames) / 60
+                frames = [frames[int(i * step)] for i in range(60)]
+            entry = {k: v for k, v in ep_data.items() if k != "frames"}
+            entry["frames"] = frames
+            # Load existing cache, append, keep last 200 episodes
+            existing = []
+            if self._cache_path.exists():
+                try:
+                    with open(self._cache_path, "rb") as f:
+                        existing = pickle.load(f)
+                except Exception:
+                    existing = []
+            existing.append(entry)
+            existing = existing[-200:]
+            with open(self._cache_path, "wb") as f:
+                pickle.dump(existing, f)
+        except Exception as e:
+            self._log_msg(f"Cache save failed: {e}", "dim")
+
+    def _load_episodes_from_cache(self):
+        """Load previously cached episodes into the gallery."""
+        try:
+            import pickle
+            if not self._cache_path.exists():
+                self._log_msg("No episode cache found.", "dim")
+                return
+            with open(self._cache_path, "rb") as f:
+                cached = pickle.load(f)
+            added = 0
+            existing_keys = {(e["ep"], e["seed"]) for e in self._past_episodes}
+            for ep_data in cached:
+                key = (ep_data["ep"], ep_data.get("seed", 0))
+                if key in existing_keys:
+                    continue
+                self._past_episodes.append(ep_data)
+                existing_keys.add(key)
+                added += 1
+            if added:
+                self._refresh_gallery_list()
+                self._log_msg(f"Loaded {added} episode(s) from cache.", "ok")
+            else:
+                self._log_msg("No new episodes in cache.", "dim")
+        except Exception as e:
+            self._log_msg(f"Cache load failed: {e}", "err")
 
     # ── queue drain ───────────────────────────────────────────────────────────
 
