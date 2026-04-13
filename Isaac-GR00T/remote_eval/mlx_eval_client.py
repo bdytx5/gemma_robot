@@ -169,6 +169,7 @@ def run_eval(
     weave_project: str,
     video_fps: int,
     cuda_delta: bool,
+    dtype: str = "bfloat16",
 ):
     weave.init(weave_project)
 
@@ -189,6 +190,7 @@ def run_eval(
             weights_dir=str(weights_dir),
             mlx_llm_path=str(llm_dir),
             n_diffusion_steps=n_diffusion_steps,
+            dtype=dtype,
         )
     else:
         vla = GemmaVLA.from_pretrained(
@@ -198,6 +200,7 @@ def run_eval(
             mlx_llm_path=mlx_llm_path,
             hf_token=hf_tok,
             n_diffusion_steps=n_diffusion_steps,
+            dtype=dtype,
         )
 
     cv2.namedWindow("Robot View", cv2.WINDOW_NORMAL)
@@ -346,6 +349,9 @@ if __name__ == "__main__":
                         help="W&B Weave project name")
     parser.add_argument("--video_fps", type=int, default=10,
                         help="FPS for episode videos logged to Weave")
+    parser.add_argument("--dtype", default="bfloat16",
+                        choices=["bfloat16", "float16", "float32"],
+                        help="dtype for MLX model (default: bfloat16)")
     parser.add_argument("--cuda_delta", action="store_true",
                         help="Call /predict on server each step to compare CUDA vs MLX actions")
     args = parser.parse_args()
@@ -367,4 +373,5 @@ if __name__ == "__main__":
         weave_project=args.weave_project,
         video_fps=args.video_fps,
         cuda_delta=args.cuda_delta,
+        dtype=args.dtype,
     )

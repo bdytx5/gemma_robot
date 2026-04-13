@@ -75,9 +75,9 @@ class FractionalRandomCrop(A.DualTransform):
     """
 
     def __init__(
-        self, crop_fraction: float = 0.9, p: float = 1.0, always_apply: bool | None = None
+        self, crop_fraction: float = 0.9, p: float = 1.0
     ):
-        super().__init__(p=p, always_apply=always_apply)
+        super().__init__(p=p)
         if not 0.0 < crop_fraction <= 1.0:
             raise ValueError("crop_fraction must be between 0.0 and 1.0")
         self.crop_fraction = crop_fraction
@@ -141,9 +141,9 @@ class FractionalCenterCrop(A.DualTransform):
     """
 
     def __init__(
-        self, crop_fraction: float = 0.9, p: float = 1.0, always_apply: bool | None = None
+        self, crop_fraction: float = 0.9, p: float = 1.0
     ):
-        super().__init__(p=p, always_apply=always_apply)
+        super().__init__(p=p)
         if not 0.0 < crop_fraction <= 1.0:
             raise ValueError("crop_fraction must be between 0.0 and 1.0")
         self.crop_fraction = crop_fraction
@@ -203,8 +203,8 @@ class LetterBoxPad(A.DualTransform):
         uint8, float32
     """
 
-    def __init__(self, p: float = 1.0, always_apply: bool | None = None):
-        super().__init__(p=p, always_apply=always_apply)
+    def __init__(self, p: float = 1.0):
+        super().__init__(p=p)
 
     def apply(
         self,

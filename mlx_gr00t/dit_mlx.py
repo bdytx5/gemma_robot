@@ -28,8 +28,9 @@ import numpy as np
 def timestep_sinusoidal(timesteps, dim=256, flip_sin_to_cos=True, downscale_freq_shift=1):
     """Matches diffusers Timesteps(num_channels=256, flip_sin_to_cos=True, downscale_freq_shift=1)."""
     half = dim // 2
-    exponent = -math.log(10000) * mx.arange(half, dtype=mx.float16) / (half - downscale_freq_shift)
-    emb = timesteps[:, None].astype(mx.float16) * mx.exp(exponent)[None, :]
+    dt = timesteps.dtype
+    exponent = -math.log(10000) * mx.arange(half, dtype=dt) / (half - downscale_freq_shift)
+    emb = timesteps[:, None].astype(dt) * mx.exp(exponent)[None, :]
     if flip_sin_to_cos:
         return mx.concatenate([mx.cos(emb), mx.sin(emb)], axis=-1)
     return mx.concatenate([mx.sin(emb), mx.cos(emb)], axis=-1)
@@ -39,8 +40,9 @@ def sinusoidal_pos_encoding(timesteps_2d, dim):
     """Matches SinusoidalPositionalEncoding in embodiment_conditioned_mlp.py.
     timesteps_2d: (B, T) → output: (B, T, dim)"""
     half = dim // 2
-    exponent = -mx.arange(half, dtype=mx.float16) * (math.log(10000.0) / half)
-    freqs = timesteps_2d[..., None].astype(mx.float16) * mx.exp(exponent)  # (B, T, half)
+    dt = timesteps_2d.dtype
+    exponent = -mx.arange(half, dtype=dt) * (math.log(10000.0) / half)
+    freqs = timesteps_2d[..., None].astype(dt) * mx.exp(exponent)  # (B, T, half)
     return mx.concatenate([mx.sin(freqs), mx.cos(freqs)], axis=-1)
 
 
@@ -105,13 +107,22 @@ class Attention(nn.Module):
 
         # attention_mask: (B, S) bool, True = attend. Convert to additive for sdpa.
         mask = None
+        has_any = None
         if attention_mask is not None:
+            # (B,) bool — whether each batch item has any key to attend to
+            has_any = mx.any(attention_mask, axis=-1)
             # (B, S) → (B, 1, 1, S), False positions get -1e4 (bfloat16-safe)
             mask = mx.where(attention_mask[:, None, None, :],
                             mx.array(0, dtype=q.dtype),
                             mx.array(-1e4, dtype=q.dtype))
 
         out = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale, mask=mask)
+
+        # When all keys are masked (all-False), MLX SDPA returns non-zero (uniform
+        # attention) while PyTorch returns exactly zero. Zero out those rows to match.
+        if has_any is not None:
+            out = mx.where(has_any[:, None, None, None], out, mx.zeros_like(out))
+
         out = out.transpose(0, 2, 1, 3).reshape(B, T, -1)
         return self.to_out(out)
 
@@ -185,7 +196,7 @@ class AlternateVLDiT(nn.Module):
                                                cross_attention_dim=ca_dim, norm_type=norm_type))
         self.transformer_blocks = blocks
 
-        self.norm_out = nn.LayerNorm(inner_dim, affine=False)
+        self.norm_out = nn.LayerNorm(inner_dim, affine=False, eps=1e-6)
         self.proj_out_1 = nn.Linear(inner_dim, inner_dim * 2)
         self.proj_out_2 = nn.Linear(inner_dim, output_dim)
 

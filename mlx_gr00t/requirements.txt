@@ -1,8 +1,7 @@
-mlx>=0.22.0
-mlx-lm>=0.20.0
-torch>=2.3.0
-torchvision
-transformers>=4.51.0,<5.0
+# ── app runtime (required to run app.py) ─────────────────────────────────────
+mlx>=0.31.0
+mlx-lm>=0.29.0
+transformers>=4.57.0,<5.0
 huggingface_hub
 safetensors
 numpy
@@ -15,3 +14,8 @@ sentencepiece
 wandb
 weave
 moviepy
+pygame>=2.1.0   # pre-initialized on main thread to prevent SDL/Cocoa SIGTRAP
+
+# ── dev / validation scripts only (not needed to run the app) ─────────────────
+# torch>=2.3.0
+# torchvision

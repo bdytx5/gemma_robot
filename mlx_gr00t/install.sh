@@ -121,13 +121,14 @@ log "Installing packages (this takes ~2 min)..."
 "$PIP" install --upgrade pip -q || die "pip upgrade failed"
 
 "$PIP" install \
-    "mlx>=0.22.0" \
-    "mlx-lm>=0.20.0" \
-    "transformers>=4.51.0,<5.0" \
+    "mlx>=0.31.0" \
+    "mlx-lm>=0.29.0" \
+    "transformers>=4.57.0,<5.0" \
     "huggingface_hub" \
     "safetensors" \
     "numpy" \
     "Pillow" \
+    "einops>=0.8.0" \
     "requests" \
     "msgpack" \
     "tokenizers" \
@@ -135,6 +136,7 @@ log "Installing packages (this takes ~2 min)..."
     "wandb" \
     "weave" \
     "moviepy" \
+    "pygame>=2.1.0" \
     || die "Package install failed — see pip output above"
 
 ok "Packages installed"

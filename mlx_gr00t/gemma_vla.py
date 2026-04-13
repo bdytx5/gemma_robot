@@ -27,9 +27,10 @@ Usage:
 
 import sys
 import json
+import re
 import numpy as np
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageOps
 
 import mlx.core as mx
 
@@ -344,8 +345,22 @@ class GemmaVLA:
         """
         steps = n_diffusion_steps or self.n_diffusion_steps
 
+        # --- A0. Formalize instruction to match training preprocessing ---
+        # Gr00tN1d6Processor lowercases and strips punctuation when formalize_language=True
+        # (the default).  Match that here so token IDs align with training.
+        instruction = re.sub(r"[^\w\s]", "", instruction.lower())
+
         # --- A. Preprocess image → MLX NHWC float32 [-1, 1] ---
-        img = image.convert("RGB").resize((self.image_size, self.image_size), Image.BICUBIC)
+        # Letterbox to square first (pad shorter edge with black) so aspect ratio is
+        # preserved, matching the LetterBoxTransform in Gr00tN1d6Processor.
+        img = image.convert("RGB")
+        w, h = img.size
+        if w != h:
+            side = max(w, h)
+            pad_w = (side - w) // 2
+            pad_h = (side - h) // 2
+            img = ImageOps.expand(img, border=(pad_w, pad_h, side - w - pad_w, side - h - pad_h), fill=0)
+        img = img.resize((self.image_size, self.image_size), Image.BICUBIC)
         img_np = (np.array(img, dtype=np.float32) / 255.0 - 0.5) / 0.5
         pixel_values = mx.array(img_np[None])   # (1, H, W, 3)
 

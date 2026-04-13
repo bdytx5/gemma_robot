@@ -87,6 +87,7 @@ print(f"  image_size={IMAGE_SIZE}  action_dim={action_dim}  max_state_dim={max_s
 banner("Stage A: Vision encoder")
 
 import mlx.core as mx
+import mlx.utils as mlx_utils
 import torch
 import torch.nn as nn
 
@@ -94,7 +95,7 @@ import torch.nn as nn
 from vision_mlx import build_vision_mlx
 from eaglevl.model.eagle2_5.configuration_eagle2_5_vl import Eagle2_5_VLConfig
 
-vision_mlx = build_vision_mlx(state_dict, eagle_config)
+vision_mlx = build_vision_mlx(state_dict, eagle_config, dtype="float32")
 pv_mlx = mx.array(img_np[None])          # (1, H, W, 3) NHWC
 out_mlx = vision_mlx(pv_mlx)
 mx.eval(out_mlx)
@@ -220,11 +221,12 @@ print(f"  PyTorch DiT: shape={actions_pt_np.shape}  mean={actions_pt_np.mean():.
 
 # --- MLX DiT ---
 print("[MLX] Loading DiT...")
-dit_mlx_model, dit_config = build_dit_mlx(state_dict, cfg_path)
+dit_mlx_model, dit_config = build_dit_mlx(state_dict, cfg_path, dtype="float32")
 
 def _patched_get_action(self, backbone_features, backbone_attention_mask, image_mask, state, embodiment_id):
-    backbone_features = backbone_features.astype(mx.float16)
-    state = state.astype(mx.float16)
+    _dt = getattr(self, "_compute_dtype", mx.float32)
+    backbone_features = backbone_features.astype(_dt)
+    state = state.astype(_dt)
     if self.backbone_proj is not None:
         backbone_features = self.backbone_proj(backbone_features)
     if self.vlln is not None:
@@ -232,7 +234,7 @@ def _patched_get_action(self, backbone_features, backbone_attention_mask, image_
     vl_embeds = backbone_features
     state_features = self.state_encoder(state, embodiment_id)
     B = vl_embeds.shape[0]
-    actions = mx.array(fixed_noise).astype(mx.float16)
+    actions = mx.array(fixed_noise).astype(_dt)
     dt = 1.0 / self.num_inference_timesteps
     pos_emb = self.position_embedding(mx.arange(self.action_horizon)) if self.add_pos_embed else None
     for t in range(self.num_inference_timesteps):
@@ -282,9 +284,11 @@ print(f"  LLM keys in state dict: {len(llm_sd)}")
 # Use the saved LLM in HF format (already extracted by extract_llm.py)
 HF_LLM_DIR = HERE / "gr00t_llm_hf"
 if HF_LLM_DIR.exists():
-    print(f"  Loading PyTorch Gemma3 from {HF_LLM_DIR}...")
+    # Load PT from same weights as MLX (gr00t_llm_mlx, bfloat16 on disk) so both
+    # paths use identical weights after casting to float32.
+    print(f"  Loading PyTorch Gemma3 from gr00t_llm_mlx (same weights as MLX)...")
     pt_lm = AutoModelForCausalLM.from_pretrained(
-        str(HF_LLM_DIR), torch_dtype=torch.float32,
+        str(HERE / "gr00t_llm_mlx"), dtype=torch.float32,
     ).eval()
 
     # Build input_embeds: embed tokens then scatter vision features
@@ -303,6 +307,11 @@ if HF_LLM_DIR.exists():
     input_ids_pt = torch.tensor(input_ids_list, dtype=torch.long).unsqueeze(0)
     with torch.no_grad():
         input_embeds_pt = pt_lm.model.embed_tokens(input_ids_pt).float()
+        hidden_size_pt = input_embeds_pt.shape[-1]
+        # PT embed_tokens applies *sqrt(H) to text tokens; model.forward does NOT re-scale.
+        # Vision features (from SigLIP projector) are already at the correct embedding scale —
+        # place them directly (no extra scaling). MLX path pre-divides by sqrt(H) since its
+        # model.forward will multiply back up.
         vit_pt_tensor = torch.tensor(out_pt_np)
         input_embeds_pt[0, torch.tensor(img_positions_llm[:n_img_tokens])] = vit_pt_tensor[0, :n_img_tokens]
         llm_out_pt = pt_lm.model(
@@ -313,24 +322,28 @@ if HF_LLM_DIR.exists():
     hidden_pt_np = llm_out_pt.last_hidden_state.float().numpy()
     print(f"  PyTorch LLM: shape={hidden_pt_np.shape}  mean={hidden_pt_np.mean():.4f}  std={hidden_pt_np.std():.4f}")
 
-    # MLX LLM forward — use same float32 PyTorch vision features so we isolate LLM diff
-    from inference import load_mlx_llm
-    mlx_llm, tokenizer_mlx = load_mlx_llm(str(HERE / "gr00t_llm_mlx"), EAGLE_REPO, token=HF_TOKEN)
+    # MLX LLM forward — cast to float32 to match PT, isolating logic not dtype
+    from mlx_lm import load as mlx_load_llm
+    mlx_llm, _ = mlx_load_llm(str(HERE / "gr00t_llm_mlx"))
+    mlx_llm.eval()
+    mlx_llm.load_weights(list(mlx_utils.tree_flatten(
+        mlx_utils.tree_map(lambda x: x.astype(mx.float32) if isinstance(x, mx.array) else x,
+                           mlx_llm.parameters())
+    )))
     ids_mx = mx.array(input_ids_list)[None]
-    embeds_mx = mlx_llm.model.embed_tokens(ids_mx)
+    embeds_mx = mlx_llm.model.embed_tokens(ids_mx).astype(mx.float32)
     pos_idx = mx.array(img_positions_llm[:n_img_tokens])
-    # Pre-divide by sqrt(hidden_size): MLX Gemma3 applies *sqrt(h) to all input_embeddings
     hidden_size = embeds_mx.shape[-1]
-    vit_mx_for_llm = mx.array(out_pt_np) / mx.array(hidden_size ** 0.5)
+    vit_mx_for_llm = mx.array(out_pt_np).astype(mx.float32) / mx.array(hidden_size ** 0.5, mx.float32)
     embeds_mx = embeds_mx.at[0, pos_idx].add(vit_mx_for_llm[0, :n_img_tokens] - embeds_mx[0, pos_idx])
     hidden_mx = mlx_llm.model(inputs=None, input_embeddings=embeds_mx)
     mx.eval(hidden_mx)
     hidden_mx_np = np.array(hidden_mx.astype(mx.float32))
     print(f"  MLX LLM:     shape={hidden_mx_np.shape}  mean={hidden_mx_np.mean():.4f}  std={hidden_mx_np.std():.4f}")
 
-    print("\nStage B comparison (float16 MLX vs float32 PyTorch — same inputs, isolating LLM diff):")
-    stage_b = compare("LLM", hidden_mx_np, hidden_pt_np, atol=5.0)
-    print("  (atol=5.0 because MLX uses 4-bit quantization)")
+    print("\nStage B comparison (bfloat16 MLX vs float32 PyTorch — same inputs, isolating LLM diff):")
+    stage_b = compare("LLM", hidden_mx_np, hidden_pt_np, atol=1.0)
+    print("  (atol=1.0 — bfloat16 vs float32, 18 layers)")
 else:
     print(f"  SKIP — {HF_LLM_DIR} not found. Run extract_llm.py first.")
     stage_b = None
@@ -391,9 +404,8 @@ if HF_LLM_DIR.exists() and hidden_pt_np is not None:
     print(f"  MLX e2e:     shape={e2e_mlx_np.shape}  mean={e2e_mlx_np.mean():.4f}  std={e2e_mlx_np.std():.4f}")
 
     n_e2e = min(e2e_pt_np.shape[-1], e2e_mlx_np.shape[-1])
-    print(f"\nStage D comparison (4-bit LLM + float16 DiT — large diff expected due to quantization):")
-    stage_d = compare("E2E", e2e_pt_np[..., :n_e2e], e2e_mlx_np[..., :n_e2e], atol=5.0)
-    print("  (atol=5.0 — diff is driven by 4-bit LLM quantization, not logic errors)")
+    print(f"\nStage D comparison (bfloat16 LLM + float16 DiT vs float32 PyTorch):")
+    stage_d = compare("E2E", e2e_pt_np[..., :n_e2e], e2e_mlx_np[..., :n_e2e], atol=2.0)
 else:
     print("  SKIP — run extract_llm.py first")
     stage_d = None
@@ -404,15 +416,13 @@ else:
 # ---------------------------------------------------------------------------
 banner("Summary")
 print(f"  Stage A (Vision):          {'PASS' if stage_a else 'FAIL'}")
-print(f"  Stage B (LLM):             {'PASS' if stage_b else ('SKIP' if stage_b is None else 'FAIL')}  (4-bit quant diff expected)")
+print(f"  Stage B (LLM fp32):        {'PASS' if stage_b else ('SKIP' if stage_b is None else 'FAIL')}")
 print(f"  Stage C (DiT isolated):    {'PASS' if stage_c else 'FAIL'}")
-print(f"  Stage D (Full E2E):        {'PASS' if stage_d else ('SKIP' if stage_d is None else 'FAIL')}  (4-bit quant diff expected)")
+print(f"  Stage D (Full E2E):        {'PASS' if stage_d else ('SKIP' if stage_d is None else 'FAIL')}")
 
 core_pass = stage_a and stage_c
 print()
 if core_pass:
     print("MLX implementation is CORRECT (vision + DiT logic verified).")
-    if stage_b is False or stage_d is False:
-        print("E2E diff is expected — driven by 4-bit LLM quantization, not a bug.")
 else:
     print("ISSUES FOUND — check diffs above.")

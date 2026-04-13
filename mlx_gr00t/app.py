@@ -17,6 +17,8 @@ import time
 import io
 import json
 import tempfile
+import logging
+import traceback
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, font as tkfont
@@ -27,6 +29,42 @@ import requests
 # ── paths ─────────────────────────────────────────────────────────────────────
 HERE = Path(__file__).parent
 ISAAC = HERE.parent / "Isaac-GR00T"
+
+# ── crash log ─────────────────────────────────────────────────────────────────
+_LOG_FILE = HERE / "app_crash.log"
+logging.basicConfig(
+    filename=str(_LOG_FILE),
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+log = logging.getLogger("app")
+log.info("=== app started (pid %s) ===", os.getpid())
+
+def _log_exc(label: str, exc: BaseException | None = None):
+    """Write a labelled traceback to app_crash.log."""
+    tb = traceback.format_exc() if exc is None else "".join(
+        traceback.format_exception(type(exc), exc, exc.__traceback__))
+    log.error("%s\n%s", label, tb)
+
+sys.excepthook = lambda t, v, tb: (
+    log.critical("Unhandled exception: %s", "".join(traceback.format_exception(t, v, tb))),
+    sys.__excepthook__(t, v, tb),
+)
+
+# ── pre-import SDL/pygame on the main thread ──────────────────────────────────
+# pygame (pulled in transitively by weave→matplotlib) calls SDL_VideoInit /
+# Cocoa_InitKeyboard on first import.  macOS requires that to happen on the
+# main thread; if a background thread triggers it first the process gets
+# SIGTRAP from dispatch_assert_queue_fail.  Importing here, before any threads
+# are spawned, forces the one-time init to land on the main thread safely.
+os.environ.setdefault("SDL_VIDEODRIVER", "dummy")   # headless – no window
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+try:
+    import pygame as _pygame
+    _pygame.init()
+    log.info("pygame pre-init OK (SDL headless)")
+except Exception as _e:
+    log.warning("pygame pre-init skipped: %s", _e)
 EAGLE = HERE.parent / "Eagle" / "Eagle2_5"
 for p in [str(HERE), str(ISAAC), str(EAGLE)]:
     if p not in sys.path:
@@ -318,7 +356,7 @@ class GemmaRobotApp:
                                       command=self._on_setup_env)
         self._setup_btn.grid(row=0, column=10, padx=(0, 6))
 
-        self._restart_btn = self._lbtn(cfg, "⟳  Restart Sim", BG3, YELLOW,
+        self._restart_btn = self._lbtn(cfg, "⟳  Restart Sim Server", BG3, YELLOW,
                                         font=(FONT, 11), padx=12, pady=4,
                                         command=self._on_restart_sim)
         self._restart_btn.grid(row=0, column=11)
@@ -675,7 +713,12 @@ class GemmaRobotApp:
         self._gallery_current_ep_idx = idx
         self._gallery_frames = ep["frames"]
         self._gallery_frame_idx = 0
-        succ = "✓ success" if ep["success"] else "✗ failed"
+        if ep.get("stopped"):
+            succ = "⏹ stopped"
+        elif ep["success"]:
+            succ = "✓ success"
+        else:
+            succ = "✗ failed"
         self._gallery_info.config(
             text=f"Ep {ep['ep']}  {succ}  {ep['steps']} steps  |  {ep['instruction'][:40]}"
         )
@@ -852,18 +895,23 @@ class GemmaRobotApp:
     # ── restart sim ───────────────────────────────────────────────────────────
 
     def _on_restart_sim(self):
-        if self._restart_busy:
-            return
-        self._restart_busy = True
-        self._restart_btn.config(text="⟳  Restarting…", fg=TEXT_DIM)
-        threading.Thread(target=self._restart_sim_thread, daemon=True).start()
+        try:
+            log.debug("_on_restart_sim: _restart_busy=%s", self._restart_busy)
+            if self._restart_busy:
+                return
+            self._restart_busy = True
+            self._restart_btn.config(text="⟳  Restarting…", fg=TEXT_DIM)
+            threading.Thread(target=self._restart_sim_thread, daemon=True).start()
+        except Exception as e:
+            _log_exc("_on_restart_sim crashed", e)
+            raise
 
     def _restart_sim_thread(self):
         def q(fn, *a, **kw): self._q.put((fn, a, kw))
 
         def done(ok, msg=""):
             color = GREEN if ok else RED
-            label = "⟳  Restart Sim"
+            label = "⟳  Restart Sim Server"
             self._restart_busy = False
             q(self._restart_btn.config, text=label, fg=YELLOW)
             q(self._set_status, msg or ("Sim ready" if ok else "Restart failed"), color)
@@ -1034,25 +1082,35 @@ class GemmaRobotApp:
     # ── run/stop ──────────────────────────────────────────────────────────────
 
     def _on_next_episode_guarded(self):
-        if self._running:
-            self._skip_ep_event.set()
+        try:
+            log.debug("_on_next_episode_guarded: _running=%s", self._running)
+            if self._running:
+                self._skip_ep_event.set()
+        except Exception as e:
+            _log_exc("_on_next_episode_guarded crashed", e)
+            raise
 
     def _on_run_stop(self):
-        if self._running:
-            self._stop_event.set()
-            self._running = False
-            self._run_btn.config(text="⏳  Stopping…", bg=BG3, fg=TEXT_DIM)
-            self._next_btn.config(fg="#333333")
-            self.root.after(200, self._poll_thread_done)
-        else:
-            self._stop_event.clear()
-            self._skip_ep_event.clear()
-            self._running = True
-            self._run_btn.config(text="■  Stop", bg=RED, fg=TEXT)
-            self._next_btn.config(fg=TEXT)
-            t = threading.Thread(target=self._eval_thread, daemon=True)
-            t.start()
-            self._eval_thread_ref = t
+        try:
+            log.debug("_on_run_stop: _running=%s", self._running)
+            if self._running:
+                self._stop_event.set()
+                self._running = False
+                self._run_btn.config(text="⏳  Stopping…", bg=BG3, fg=TEXT_DIM)
+                self._next_btn.config(fg="#333333")
+                self.root.after(200, self._poll_thread_done)
+            else:
+                self._stop_event.clear()
+                self._skip_ep_event.clear()
+                self._running = True
+                self._run_btn.config(text="■  Stop", bg=RED, fg=TEXT)
+                self._next_btn.config(fg=TEXT)
+                t = threading.Thread(target=self._eval_thread, daemon=True)
+                t.start()
+                self._eval_thread_ref = t
+        except Exception as e:
+            _log_exc("_on_run_stop crashed", e)
+            raise
 
     def _poll_thread_done(self):
         t = self._eval_thread_ref
@@ -1065,6 +1123,17 @@ class GemmaRobotApp:
     # ── eval thread ───────────────────────────────────────────────────────────
 
     def _eval_thread(self):
+        try:
+            self._eval_thread_inner()
+        except Exception as e:
+            _log_exc("_eval_thread crashed", e)
+            def q(fn, *a, **kw): self._q.put((fn, a, kw))
+            q(self._log_msg, f"CRASH: {e} — see app_crash.log", "err")
+            self._running = False
+            q(self._run_btn.config, text="▶  Run Eval", bg="#4CAF50", fg="#000000")
+            q(self._next_btn.config, fg="#555555")
+
+    def _eval_thread_inner(self):
         def q(fn, *a, **kw): self._q.put((fn, a, kw))
 
         url        = self._url_var.get().strip()
@@ -1277,14 +1346,17 @@ class GemmaRobotApp:
                 q(self._step_lbl.config, text=str(step))
 
             skipped = self._skip_ep_event.is_set()
+            stopped = self._stop_event.is_set()
+            was_cut_short = skipped or stopped
             elapsed = time.time() - t_ep_start
 
-            successes.append(success)
-            sr = sum(successes) / len(successes)
-            color = "ok" if success else "err"
-            skip_note = "  [skipped]" if skipped else ""
+            if not was_cut_short:
+                successes.append(success)
+            sr = sum(successes) / len(successes) if successes else 0.0
+            color = "ok" if success else ("dim" if was_cut_short else "err")
+            cut_note = "  [skipped]" if skipped else ("  [stopped]" if stopped else "")
             q(self._log_msg,
-              f"  done  steps={step}  success={success}  sr={sr:.0%}{skip_note}", color)
+              f"  done  steps={step}  success={success}  sr={sr:.0%}{cut_note}", color)
             q(self._sr_lbl.config, text=f"{sr:.0%}")
 
             # add to gallery (non-blocking — runs in main thread via queue)
@@ -1293,6 +1365,7 @@ class GemmaRobotApp:
                     "ep": ep + 1,
                     "seed": ep_seed,
                     "success": success,
+                    "stopped": was_cut_short,
                     "steps": step,
                     "frames": ep_frames,
                     "instruction": instruction,
@@ -1354,14 +1427,36 @@ class GemmaRobotApp:
         self._gallery_ep_indices = []
         success_only = self._show_success_only_var.get()
         for i, ep_data in enumerate(self._past_episodes):
-            if success_only and not ep_data["success"]:
+            stopped = ep_data.get("stopped", False)
+            if success_only and (not ep_data["success"] or stopped):
                 continue
             self._gallery_ep_indices.append(i)
-            succ  = "✓" if ep_data["success"] else "✗"
-            color = GREEN if ep_data["success"] else RED
-            label = f"  Ep {ep_data['ep']:2d}  {succ}  {ep_data['steps']:3d} steps  —  {ep_data['instruction'][:28]}"
+            if stopped:
+                icon  = "⏹"
+                color = YELLOW
+            elif ep_data["success"]:
+                icon  = "✓"
+                color = GREEN
+            else:
+                icon  = "✗"
+                color = RED
+            label = f"  Ep {ep_data['ep']:2d}  {icon}  {ep_data['steps']:3d} steps  —  {ep_data['instruction'][:28]}"
             self._gallery_list.insert("end", label)
             self._gallery_list.itemconfig("end", fg=color)
+
+        # If the currently-displayed episode was filtered out, load the first
+        # visible one (or clear the player if nothing passes the filter).
+        if self._gallery_current_ep_idx not in self._gallery_ep_indices:
+            if self._gallery_ep_indices:
+                self._gallery_list.selection_set(0)
+                self._load_gallery_episode(self._gallery_ep_indices[0])
+            else:
+                # nothing to show — stop playback and clear the info label
+                if self._gallery_after_id:
+                    self.root.after_cancel(self._gallery_after_id)
+                    self._gallery_after_id = None
+                self._gallery_playing = False
+                self._gallery_info.config(text="No episodes match the filter")
 
     # ── episode cache ─────────────────────────────────────────────────────────
 
